@@ -58,9 +58,6 @@ def login(
     if shop.status != "ACTIVE":
         raise HTTPException(status_code=403, detail="Account not activated")
 
-    if not shop.password_hash:
-        raise HTTPException(status_code=400, detail="Password not set")
-
     if not verify_password(form_data.password, shop.password_hash):
         raise HTTPException(status_code=400, detail="Invalid credentials")
 
