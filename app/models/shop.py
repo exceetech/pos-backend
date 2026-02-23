@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, DateTime
+from sqlalchemy import Boolean, Column, Integer, String, DateTime
 from datetime import datetime
 from app.database import Base
 
@@ -12,4 +12,5 @@ class Shop(Base):
     phone = Column(String)
     password_hash = Column(String, nullable=True)
     status = Column(String, default="PENDING")
+    is_first_login = Column(Boolean, default=True)
     created_at = Column(DateTime, default=datetime.utcnow)
