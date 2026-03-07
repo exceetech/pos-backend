@@ -1,6 +1,7 @@
 from sqlalchemy import Column, Integer, Float, String, ForeignKey, DateTime
 from datetime import datetime
 from app.database import Base
+from datetime import datetime
 
 class Bill(Base):
     __tablename__ = "bills"
@@ -16,4 +17,4 @@ class Bill(Base):
     gst = Column(Float)
     discount = Column(Float)
 
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=datetime.now)
