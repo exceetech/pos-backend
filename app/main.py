@@ -1,23 +1,39 @@
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 from app.database import engine, Base
+
 from app.models import *
+
 from app.routes import auth_routes
 from app.routes import product_routes
+from app.routes import bill_routes
+from app.routes import report_routes
 
-# Create FastAPI app
+
 app = FastAPI(
     title="POS Backend",
     version="1.0.0"
 )
 
-# Create ALL database tables
+# CORS
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# Create tables
 Base.metadata.create_all(bind=engine)
 
-# Include routes
+# Routers
 app.include_router(auth_routes.router)
 app.include_router(product_routes.router)
+app.include_router(bill_routes.router)
+app.include_router(report_routes.router)
 
-# Root test route
+# Root
 @app.get("/")
 def root():
     return {"message": "POS Backend Running Successfully!"}

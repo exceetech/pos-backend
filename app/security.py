@@ -16,7 +16,7 @@ def verify_password(plain_password: str, hashed_password: str):
 
 # ================= JWT =================
 
-SECRET_KEY = "CHANGE_THIS_LATER"
+SECRET_KEY = "eXCeeTechSecretKeyForJWTGeneration"
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_HOURS = 24
 
