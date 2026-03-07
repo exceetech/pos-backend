@@ -10,3 +10,6 @@ pydantic[email]
 python-multipart
 python-jose[cryptography]
 reportlab
+matplotlib
+fastapi-mail
+reportlab
