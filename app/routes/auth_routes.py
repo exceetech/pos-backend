@@ -1,3 +1,4 @@
+from app.schemas.SaveTokenRequest import SaveTokenRequest
 from app.schemas.VerifyPasswordRequest import VerifyPasswordRequest
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.security import OAuth2PasswordRequestForm
@@ -141,3 +142,19 @@ def verify_password_route(
         raise HTTPException(status_code=401, detail="Invalid password")
 
     return {"message": "Verified"}
+
+# ================= SAVE FCM TOKEN =================
+
+@router.post("/save-token")
+def save_token(
+    data: SaveTokenRequest,
+    db: Session = Depends(get_db),
+    shop = Depends(get_current_shop)
+):
+
+    print("FCM TOKEN RECEIVED:", data.token)
+
+    shop.fcm_token = data.token
+    db.commit()
+
+    return {"message": "Token saved"}

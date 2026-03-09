@@ -13,3 +13,4 @@ reportlab
 matplotlib
 fastapi-mail
 reportlab
+firebase-admin

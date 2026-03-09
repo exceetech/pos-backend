@@ -24,3 +24,5 @@ class Shop(Base):
     is_first_login = Column(Boolean, default=True)
 
     created_at = Column(DateTime, default=datetime.utcnow)
+
+    fcm_token = Column(String, nullable=True)
