@@ -1,3 +1,4 @@
+from app.schemas.VerifyPasswordRequest import VerifyPasswordRequest
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy.orm import Session
@@ -58,8 +59,22 @@ def login(
     if shop.status != "ACTIVE":
         raise HTTPException(status_code=403, detail="Account not activated")
 
-    if not verify_password(form_data.password, shop.password_hash):
-        raise HTTPException(status_code=400, detail="Invalid credentials")
+    from app.security import hash_password
+
+    # check if password stored is NOT hashed
+    if not shop.password_hash.startswith("$2b$"):
+
+        # first login after upgrade
+        if form_data.password != shop.password_hash:
+            raise HTTPException(status_code=401, detail="Invalid credentials")
+
+        # convert plaintext password to hash
+        shop.password_hash = hash_password(shop.password_hash)
+        db.commit()
+
+    else:
+        if not verify_password(form_data.password, shop.password_hash):
+            raise HTTPException(status_code=401, detail="Invalid credentials")
 
     access_token = create_access_token(data={"shop_id": shop.id})
 
@@ -113,3 +128,16 @@ def change_password(
     db.commit()
 
     return {"message": "Password updated successfully"}
+
+# ================= VERIFY PASSWORD =================
+@router.post("/verify-password")
+def verify_password_route(
+    data: VerifyPasswordRequest,
+    db: Session = Depends(get_db),
+    current_shop = Depends(get_current_shop)
+):
+
+    if not verify_password(data.password, current_shop.password_hash):
+        raise HTTPException(status_code=401, detail="Invalid password")
+
+    return {"message": "Verified"}

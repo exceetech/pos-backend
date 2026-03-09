@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, Float, String, ForeignKey, DateTime
+from sqlalchemy import Column, Integer, Float, String, ForeignKey, DateTime, Boolean
 from datetime import datetime
 from app.database import Base
 from datetime import datetime
@@ -16,5 +16,7 @@ class Bill(Base):
     payment_method = Column(String)
     gst = Column(Float)
     discount = Column(Float)
+
+    active = Column(Boolean, default=True)
 
     created_at = Column(DateTime, default=datetime.now)
