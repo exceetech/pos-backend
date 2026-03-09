@@ -9,6 +9,7 @@ from app.models.global_products import GlobalProduct
 
 from app.schemas.bill_schema import CreateBillRequest
 from app.dependencies import get_current_shop
+from app.models.billing_settings import BillingSettings
 
 router = APIRouter(prefix="/bills", tags=["Bills"])
 
@@ -24,8 +25,14 @@ def create_bill(
 
     total_amount = 0
     total_items = 0
-    gst = data.gst
     discount = data.discount
+
+    # ================= LOAD DEFAULT GST =================
+    settings = db.query(BillingSettings).filter(
+        BillingSettings.shop_id == current_shop.id
+    ).first()
+
+    gst_rate = settings.default_gst if settings else 0
 
     bill_items = []
 
@@ -58,6 +65,9 @@ def create_bill(
             "shop_product_id": shop_product.id
         })
 
+    # ================= CALCULATE GST =================
+    gst = total_amount * gst_rate / 100
+
     final_total = total_amount + gst - discount
 
     bill = Bill(
@@ -74,7 +84,7 @@ def create_bill(
     db.commit()
     db.refresh(bill)
 
-    # Insert bill items
+    # ================= INSERT BILL ITEMS =================
     for i in bill_items:
 
         bill_item = BillItem(
@@ -96,7 +106,6 @@ def create_bill(
         "bill_number": bill.bill_number,
         "total_amount": final_total
     }
-
 
 # ================= GET SINGLE BILL =================
 
@@ -120,9 +129,26 @@ def get_bill(
     ).all()
 
     return {
-        "bill": bill,
-        "items": items
-    }
+    "bill": {
+        "bill_id": bill.id,
+        "bill_number": bill.bill_number,
+        "subtotal": bill.total_amount - bill.gst + bill.discount,
+        "gst": bill.gst,
+        "discount": bill.discount,
+        "total_amount": bill.total_amount,
+        "payment_method": bill.payment_method,
+        "created_at": str(bill.created_at)
+    },
+    "items": [
+        {
+            "product_name": i.product_name,
+            "price": i.price,
+            "quantity": i.quantity,
+            "subtotal": i.subtotal
+        }
+        for i in items
+    ]
+}
 
 
 # ================= GET ALL BILLS =================

@@ -1,9 +1,13 @@
+import os
+
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 from sqlalchemy import func
 from datetime import datetime, timedelta
 
 from fastapi_mail import FastMail, MessageSchema
+from fastapi import Depends
+from app.dependencies import get_current_shop
 
 from app.database import get_db
 from app.dependencies import get_current_shop
@@ -287,7 +291,7 @@ async def email_report(db: Session = Depends(get_db), current_shop=Depends(get_c
 
     # ===== GENERATE PDF =====
 
-    file_path = f"analytics_report_{current_shop.id}.pdf"
+    file_path = f"{current_shop.shop_name}_{current_shop.id}_analytics_report_{datetime.now().strftime('%Y-%m-%d')}.pdf"
 
     generate_report_pdf(
         file_path,
@@ -311,4 +315,6 @@ async def email_report(db: Session = Depends(get_db), current_shop=Depends(get_c
     fm = FastMail(mail_config)
     await fm.send_message(message)
 
+    if os.path.exists(file_path):
+        os.remove(file_path)
     return {"message": "Report sent successfully"}

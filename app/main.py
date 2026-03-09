@@ -8,6 +8,9 @@ from app.routes import auth_routes
 from app.routes import product_routes
 from app.routes import bill_routes
 from app.routes import report_routes
+from app.routes import shop_routes
+from app.routes import billing_settings_routes
+
 
 
 app = FastAPI(
@@ -32,6 +35,9 @@ app.include_router(auth_routes.router)
 app.include_router(product_routes.router)
 app.include_router(bill_routes.router)
 app.include_router(report_routes.router)
+app.include_router(shop_routes.router)
+app.include_router(billing_settings_routes.router)
+
 
 # Root
 @app.get("/")
