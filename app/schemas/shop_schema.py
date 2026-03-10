@@ -27,3 +27,6 @@ class ShopSettingsUpdate(BaseModel):
     store_address: str
     phone: str
     store_gstin: str
+    
+class ForgotPasswordRequest(BaseModel):
+    email: EmailStr

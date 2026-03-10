@@ -53,3 +53,20 @@ Email: {shop.email}
 Phone: {shop.phone}
 """
     )
+
+def send_otp_email(shop, otp):
+    send_email(
+    to_email=shop.email, 
+    subject="Password Reset OTP - eXCee POS",
+    body=f"""
+    Hello {shop.owner_name},
+
+    We received a request to reset your password.
+
+    Your OTP is:
+
+        {otp}
+
+    This OTP is valid for 5 minutes.
+    """
+        )

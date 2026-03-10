@@ -12,6 +12,7 @@ from app.routes import shop_routes
 from app.routes import billing_settings_routes
 from app.routes.security_routes import router as security_router
 from app.routes import admin_routes
+from app.routes.analytics_routes import router as analytics_router
 
 
 
@@ -41,6 +42,7 @@ app.include_router(shop_routes.router)
 app.include_router(billing_settings_routes.router)
 app.include_router(security_router)
 app.include_router(admin_routes.router)
+app.include_router(analytics_router)
 
 
 # Root
