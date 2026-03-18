@@ -9,60 +9,80 @@ from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
 
 
-# ================= REGISTER FONT =================
-
 pdfmetrics.registerFont(
     TTFont("DejaVu", "app/util/fonts/DejaVuSans.ttf")
 )
 
+TOTAL_WIDTH = 16 * cm
 
-# ================= CORPORATE TABLE =================
 
+# ================= TABLE =================
 def corporate_table(data):
 
-    table = Table(data, colWidths=[8*cm, 4*cm, 4*cm])
+    col_count = len(data[0])
+    col_width = TOTAL_WIDTH / col_count
+    col_widths = [col_width] * col_count
+
+    table = Table(data, colWidths=col_widths)
 
     table.setStyle(TableStyle([
-        ("GRID", (0,0), (-1,-1), 0.5, colors.grey),
-        ("BACKGROUND", (0,0), (-1,0), colors.lightgrey),
+        ("GRID", (0,0), (-1,-1), 0.3, colors.grey),
 
-        ("FONTNAME", (0,0), (-1,0), "DejaVu"),
-        ("FONTNAME", (0,1), (-1,-1), "DejaVu"),
+        ("BACKGROUND", (0,0), (-1,0), colors.HexColor("#2E3B4E")),
+        ("TEXTCOLOR", (0,0), (-1,0), colors.white),
 
+        ("FONTNAME", (0,0), (-1,-1), "DejaVu"),
+
+        ("ALIGN", (0,0), (0,-1), "LEFT"),
         ("ALIGN", (1,1), (-1,-1), "RIGHT"),
+        ("ALIGN", (0,0), (-1,0), "CENTER"),
 
-        ("TOPPADDING", (0,0), (-1,0), 8),
-        ("BOTTOMPADDING", (0,0), (-1,0), 8)
+        ("TOPPADDING", (0,0), (-1,-1), 6),
+        ("BOTTOMPADDING", (0,0), (-1,-1), 6),
     ]))
 
     return table
 
 
-# ================= PDF GENERATOR =================
-
-def generate_report_pdf(file_path, summary, daily, monthly, products, peak):
+# ================= MAIN =================
+def generate_report_pdf(file_path, summary, daily, monthly, products, peak, report_type="today", shop=None):
 
     styles = getSampleStyleSheet()
+
+    date_style = ParagraphStyle(
+        "DateStyle",
+        parent=styles["Normal"],
+        alignment=0,  # 🔥 LEFT align
+        fontSize=11,
+        textColor=colors.black,  # 🔥 BLACK color
+        spaceAfter=10,
+        fontName="DejaVu"
+    )
 
     title = ParagraphStyle(
         "Title",
         parent=styles["Title"],
         alignment=1,
-        fontSize=22,
+        fontSize=24,
+        textColor=colors.HexColor("#2E3B4E"),
         fontName="DejaVu"
     )
 
     subtitle = ParagraphStyle(
         "Subtitle",
         parent=styles["Normal"],
+        alignment=1,
         fontSize=11,
-        spaceAfter=6,
+        textColor=colors.grey,
+        spaceAfter=15,
         fontName="DejaVu"
     )
 
     section = ParagraphStyle(
         "Section",
         parent=styles["Heading2"],
+        fontSize=14,
+        textColor=colors.HexColor("#1F6F8B"),
         spaceAfter=10,
         fontName="DejaVu"
     )
@@ -77,37 +97,86 @@ def generate_report_pdf(file_path, summary, daily, monthly, products, peak):
 
     elements = []
 
-    # ================= TITLE =================
+    # ================= HEADER =================
+    elements.append(Paragraph("ExPOS Analytics Report", title))
 
-    elements.append(Paragraph("Financial Sales Report", title))
-    elements.append(Spacer(1, 20))
 
-    elements.append(Paragraph("<b>Prepared by:</b> ExPOS Analytics System", subtitle))
-    elements.append(Paragraph("<b>For:</b> Excee Tech", subtitle))
+    elements.append(Spacer(1, 10))
     elements.append(Paragraph(
-        f"<b>Date:</b> {datetime.now().strftime('%B %d, %Y')}",
-        subtitle
+    f"<b>Date:</b> {datetime.now().strftime('%B %d, %Y')}",
+        date_style
     ))
 
+    elements.append(Spacer(1, 1))
+
+    if shop:
+
+        elements.append(Paragraph("Shop Information", section))
+
+        shop_data = [
+            ["Shop Name", shop.get("name", "-")],
+            ["Address", shop.get("address", "-")],
+            ["Email", shop.get("email", "-")],
+            ["Phone", shop.get("phone", "-")],
+            ["GSTIN", shop.get("gstin", "-")]
+        ]
+
+        shop_table = Table(
+            shop_data,
+            colWidths=[5*cm, 11*cm]   # clean layout
+        )
+
+        shop_table.setStyle(TableStyle([
+            ("GRID", (0,0), (-1,-1), 0.3, colors.grey),
+
+            ("BACKGROUND", (0,0), (0,-1), colors.HexColor("#F5F5F5")),
+
+            ("FONTNAME", (0,0), (-1,-1), "DejaVu"),
+
+            ("ALIGN", (0,0), (0,-1), "LEFT"),
+            ("ALIGN", (1,0), (1,-1), "LEFT"),
+
+            ("TOPPADDING", (0,0), (-1,-1), 6),
+            ("BOTTOMPADDING", (0,0), (-1,-1), 6),
+        ]))
+
+        elements.append(shop_table)
+        elements.append(Spacer(1, 20))
+
+    # ================= KPI =================
+    kpi_data = [
+        ["Revenue", "Bills", "Avg Bill"],
+        [
+            f"₹ {summary['revenue']:.2f}",
+            summary["bills"],
+            f"₹ {summary['average']:.2f}"
+        ]
+    ]
+
+    kpi = corporate_table(kpi_data)
+    elements.append(kpi)
     elements.append(Spacer(1, 25))
 
-    # ================= EXECUTIVE SUMMARY =================
+    # ================= AI INSIGHT =================
+    sales_text = "Not enough data"
+    sales_color = "black"
 
-    elements.append(Paragraph("Executive Summary", section))
+    if len(daily) >= 2:
+        first = daily[0]["revenue"]
+        last = daily[-1]["revenue"]
 
-    text = f"""
-    During this reporting period, the business generated a total revenue of
-    ₹ {summary['revenue']:.2f} across {summary['bills']} completed sales transactions.
-    The average bill value during this period was ₹ {summary['average']:.2f}.
-    """
+        if first > 0:
+            change = ((last - first) / first) * 100
 
-    elements.append(Paragraph(text, paragraph))
+            if change > 0:
+                sales_text = f"▲ Sales increased by {abs(change):.1f}%"
+                sales_color = "green"
+            elif change < 0:
+                sales_text = f"▼ Sales dropped by {abs(change):.1f}%"
+                sales_color = "red"
 
-    elements.append(Spacer(1, 20))
-
-    # ================= BUSINESS INSIGHTS =================
-
-    elements.append(Paragraph("Business Insights & Recommendations", section))
+    # ================= INSIGHTS =================
+    elements.append(Paragraph("Key Insights", section))
 
     if products and peak and daily:
 
@@ -117,128 +186,70 @@ def generate_report_pdf(file_path, summary, daily, monthly, products, peak):
         peak_hour = max(peak, key=lambda x: x["revenue"])["hour"]
         slow_hour = min(peak, key=lambda x: x["revenue"])["hour"]
 
-        first_rev = daily[0]["revenue"]
-        last_rev = daily[-1]["revenue"]
+        text = f"""
+        <font color="{sales_color}"><b>{sales_text}</b></font><br/><br/>
 
-        if last_rev > first_rev:
-            trend = "Sales are increasing"
-        elif last_rev < first_rev:
-            trend = "Sales are decreasing"
-        else:
-            trend = "Sales are stable"
+        <b>Top Product:</b> <font color="green">{top_product}</font><br/>
+        <b>Low Performer:</b> <font color="red">{weak_product}</font><br/><br/>
 
-        insight_text = f"""
-        <font color="green"><b>Best Selling Product:</b> {top_product}</font><br/><br/>
-        <font color="red"><b>Weak Product:</b> {weak_product}</font><br/><br/>
-
-        <b>Peak Sales Time:</b> {peak_hour}:00<br/><br/>
-        <b>Slow Sales Time:</b> {slow_hour}:00<br/><br/>
-
-        <b>Sales Trend:</b> {trend}<br/><br/>
+        <b>Peak Hour:</b> {peak_hour}:00<br/>
+        <b>Slow Hour:</b> {slow_hour}:00<br/><br/>
 
         <b>Recommendations:</b><br/>
-        • Promote {weak_product} with discounts or combo offers.<br/>
-        • Increase stock of {top_product} during peak hours.<br/>
-        • Run promotional offers during slow hours.
+        • Promote <b>{weak_product}</b><br/>
+        • Increase stock of <b>{top_product}</b><br/>
+        • Run offers during <b>{slow_hour}:00</b>
         """
 
     else:
-        insight_text = "Not enough data available to generate insights."
+        text = "Not enough data available."
 
-    elements.append(Paragraph(insight_text, paragraph))
-
+    elements.append(Paragraph(text, paragraph))
     elements.append(Spacer(1, 25))
 
-    # ================= OVERVIEW TABLE =================
-
-    overview_table = Table([
-        ["Total Revenue", f"₹ {summary['revenue']:.2f}"],
-        ["Total Bills", summary["bills"]],
-        ["Average Bill", f"₹ {summary['average']:.2f}"]
-    ], colWidths=[8*cm, 8*cm])
-
-    overview_table.setStyle(TableStyle([
-        ("GRID",(0,0),(-1,-1),0.5,colors.grey),
-        ("ALIGN",(1,0),(1,-1),"RIGHT"),
-        ("FONTNAME",(0,0),(-1,-1),"DejaVu")
-    ]))
-
-    elements.append(overview_table)
-
-    elements.append(Spacer(1, 25))
-
-    # ================= DAILY SALES =================
-
-    elements.append(Paragraph("Daily Sales Analysis", section))
+    # ================= DAILY =================
+    elements.append(Paragraph("Daily Sales", section))
 
     data = [["Date","Revenue","Bills"]]
-
     for d in daily:
-        data.append([
-            d["date"],
-            f"₹ {d['revenue']:.2f}",
-            d["bills"]
-        ])
+        data.append([d["date"], f"₹ {d['revenue']:.2f}", d["bills"]])
 
     elements.append(corporate_table(data))
+    elements.append(Spacer(1, 20))
 
-    elements.append(Spacer(1, 25))
-
-    # ================= MONTHLY SALES =================
-
-    elements.append(Paragraph("Monthly Sales Analysis", section))
+    # ================= MONTHLY =================
+    elements.append(Paragraph("Monthly Sales", section))
 
     data = [["Month","Revenue","Bills"]]
-
     for m in monthly:
-        data.append([
-            m["month"],
-            f"₹ {m['revenue']:.2f}",
-            m["bills"]
-        ])
+        data.append([m["month"], f"₹ {m['revenue']:.2f}", m["bills"]])
 
     elements.append(corporate_table(data))
+    elements.append(Spacer(1, 20))
 
-    elements.append(Spacer(1, 25))
-
-    # ================= TOP PRODUCTS =================
-
-    elements.append(Paragraph("Top Selling Products", section))
+    # ================= PRODUCTS =================
+    elements.append(Paragraph("Top Products", section))
 
     data = [["Product","Quantity","Revenue"]]
-
     for p in products:
-        data.append([
-            p["product"],
-            p["quantity"],
-            f"₹ {p['revenue']:.2f}"
-        ])
+        data.append([p["product"], p["quantity"], f"₹ {p['revenue']:.2f}"])
 
     elements.append(corporate_table(data))
+    elements.append(Spacer(1, 20))
 
-    elements.append(Spacer(1, 25))
-
-    # ================= PEAK HOURS =================
-
-    elements.append(Paragraph("Peak Operating Hours", section))
+    # ================= PEAK =================
+    elements.append(Paragraph("Peak Hours", section))
 
     data = [["Hour","Bills","Revenue"]]
-
     for p in peak:
-        data.append([
-            f"{p['hour']}:00",
-            p["bills"],
-            f"₹ {p['revenue']:.2f}"
-        ])
+        data.append([f"{p['hour']}:00", p["bills"], f"₹ {p['revenue']:.2f}"])
 
     elements.append(corporate_table(data))
-
-    elements.append(Spacer(1, 40))
+    elements.append(Spacer(1, 30))
 
     # ================= FOOTER =================
-
-    footer = Paragraph(
-        "Generated by ExPOS Analytics | Excee Tech",
+    elements.append(Paragraph(
+        "Generated by ExPOS Analytics",
         ParagraphStyle(
             "Footer",
             alignment=1,
@@ -246,9 +257,7 @@ def generate_report_pdf(file_path, summary, daily, monthly, products, peak):
             textColor=colors.grey,
             fontName="DejaVu"
         )
-    )
-
-    elements.append(footer)
+    ))
 
     pdf = SimpleDocTemplate(
         file_path,

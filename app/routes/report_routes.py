@@ -1,12 +1,13 @@
 import os
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
 from sqlalchemy import func
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, date
+
 
 from fastapi_mail import FastMail, MessageSchema
-from fastapi import Depends
+from fastapi import Depends, HTTPException
 from app.dependencies import get_current_shop
 
 from app.database import get_db
@@ -15,6 +16,10 @@ from app.models.bill import Bill
 from app.models.bill_items import BillItem
 from app.core.config import mail_config
 from app.util.report_generator import generate_report_pdf
+
+
+from app.models.shop_products import ShopProduct
+from app.models.global_products import GlobalProduct
 
 router = APIRouter(prefix="/reports", tags=["Reports"])
 
@@ -130,18 +135,78 @@ def top_products(db: Session = Depends(get_db), current_shop=Depends(get_current
 # ================= PEAK HOURS =================
 
 @router.get("/peak-hours")
-def peak_hours(db: Session = Depends(get_db), current_shop=Depends(get_current_shop)):
+def peak_hours(
+    type: str = "all",
+    start_date: str | None = None,
+    end_date: str | None = None,
+    db: Session = Depends(get_db),
+    current_shop = Depends(get_current_shop)
+):
 
-    rows = db.query(
+    query = db.query(
         func.extract("hour", Bill.created_at),
         func.count(Bill.id),
         func.sum(Bill.total_amount)
     ).filter(
         Bill.shop_id == current_shop.id
-    ).group_by(
+    )
+
+    now = datetime.utcnow()
+
+    if type == "today":
+
+        start = datetime.combine(date.today(), datetime.min.time())
+        end = start + timedelta(days=1)
+
+        query = query.filter(
+            Bill.created_at >= start,
+            Bill.created_at < end
+        )
+
+    elif type == "week":
+
+        start = now - timedelta(days=7)
+        end = now
+
+        query = query.filter(
+            Bill.created_at >= start,
+            Bill.created_at < end
+        )
+
+    elif type == "month":
+
+        start = now - timedelta(days=30)
+        end = now
+
+        query = query.filter(
+            Bill.created_at >= start,
+            Bill.created_at < end
+        )
+
+    elif type == "year":
+
+        start = now - timedelta(days=365)
+        end = now
+
+        query = query.filter(
+            Bill.created_at >= start,
+            Bill.created_at < end
+        )
+
+    elif type == "custom" and start_date and end_date:
+
+        start = datetime.strptime(start_date, "%Y-%m-%d")
+        end = datetime.strptime(end_date, "%Y-%m-%d") + timedelta(days=1)
+
+        query = query.filter(
+            Bill.created_at >= start,
+            Bill.created_at < end
+        )
+
+    rows = query.group_by(
         func.extract("hour", Bill.created_at)
     ).order_by(
-        func.sum(Bill.total_amount).desc()
+        func.extract("hour", Bill.created_at)
     ).all()
 
     return [
@@ -157,20 +222,98 @@ def peak_hours(db: Session = Depends(get_db), current_shop=Depends(get_current_s
 # ================= AVERAGE BILL =================
 
 @router.get("/average-bill")
-def average_bill(db: Session = Depends(get_db), current_shop=Depends(get_current_shop)):
+def average_bill(
+    type: str = "today",
+    start_date: str | None = None,
+    end_date: str | None = None,
+    db: Session = Depends(get_db),
+    current_shop = Depends(get_current_shop)
+):
 
-    r = db.query(
-        func.avg(Bill.total_amount),
+    now = datetime.now()
+
+    if type == "today":
+
+        start = datetime(now.year, now.month, now.day)
+        end = start + timedelta(days=1)
+
+        prev_start = start - timedelta(days=1)
+        prev_end = start
+
+    elif type == "week":
+
+        today = date.today()
+
+        start = today - timedelta(days=today.weekday() + 1)
+        end = start + timedelta(days=7)
+
+        prev_start = start - timedelta(days=7)
+        prev_end = start
+
+    elif type == "month":
+
+        start = datetime(now.year, now.month, 1)
+
+        if now.month == 12:
+            end = datetime(now.year + 1, 1, 1)
+        else:
+            end = datetime(now.year, now.month + 1, 1)
+
+        prev_start = start - (end - start)
+        prev_end = start
+
+    elif type == "year":
+
+        start = datetime(now.year, 1, 1)
+        end = datetime(now.year + 1, 1, 1)
+
+        prev_start = datetime(now.year - 1, 1, 1)
+        prev_end = start
+
+    elif type == "custom" and start_date and end_date:
+
+        start = datetime.fromisoformat(start_date)
+        end = datetime.fromisoformat(end_date) + timedelta(days=1)
+
+        delta = end - start
+
+        prev_start = start - delta
+        prev_end = start
+
+    else:
+        start = datetime.min
+        end = datetime.max
+        prev_start = datetime.min
+        prev_end = start
+
+    current = db.query(
         func.sum(Bill.total_amount),
-        func.count(Bill.id)
+        func.count(Bill.id),
+        func.avg(Bill.total_amount)
     ).filter(
-        Bill.shop_id == current_shop.id
+        Bill.shop_id == current_shop.id,
+        Bill.created_at >= start,
+        Bill.created_at < end
+    ).first()
+
+    previous = db.query(
+        func.sum(Bill.total_amount),
+        func.count(Bill.id),
+        func.avg(Bill.total_amount)
+    ).filter(
+        Bill.shop_id == current_shop.id,
+        Bill.created_at >= prev_start,
+        Bill.created_at < prev_end
     ).first()
 
     return {
-        "average_bill": float(r[0] or 0),
-        "total_revenue": float(r[1] or 0),
-        "total_bills": int(r[2] or 0)
+        "total_revenue": float(current[0] or 0),
+        "total_bills": int(current[1] or 0),
+        "average_bill": float(current[2] or 0),
+
+        "prev_revenue": float(previous[0] or 0),
+        "prev_bills": int(previous[1] or 0),
+        "prev_avg": float(previous[2] or 0)
     }
 
 
@@ -201,6 +344,34 @@ def sales_trend(db: Session = Depends(get_db), current_shop=Depends(get_current_
         for r in rows
     ]
 
+# ================= TODAY'S HOURLY SALES =================
+
+@router.get("/today-hourly")
+def today_hourly_sales(
+    db: Session = Depends(get_db),
+    current_shop = Depends(get_current_shop)
+):
+
+    result = (
+        db.query(
+            func.extract("hour", Bill.created_at).label("hour"),
+            func.count(Bill.id).label("bills"),
+            func.sum(Bill.total_amount).label("revenue"),
+        )
+        .filter(func.date(Bill.created_at) == date.today())
+        .group_by(func.extract("hour", Bill.created_at))
+        .order_by(func.extract("hour", Bill.created_at))
+        .all()
+    )
+
+    return [
+        {
+            "hour": int(r.hour),
+            "bills": int(r.bills),
+            "revenue": float(r.revenue or 0)
+        }
+        for r in result
+    ]
 
 # ================= TOP REVENUE PRODUCTS =================
 
@@ -255,7 +426,45 @@ def weekday_analysis(db: Session = Depends(get_db), current_shop=Depends(get_cur
 # ================= EMAIL REPORT =================
 
 @router.post("/email-report")
-async def email_report(db: Session = Depends(get_db), current_shop=Depends(get_current_shop)):
+async def email_report(
+    type: str = Query("today"),
+    start_date: str | None = None,
+    end_date: str | None = None,
+    db: Session = Depends(get_db),
+    current_shop = Depends(get_current_shop)
+):
+
+    # ===== DATE RANGE =====
+
+    today = datetime.today().date()
+
+    if type == "today":
+        start = today
+        end = today
+
+    elif type == "weekly":
+        start = today - timedelta(days=6)
+        end = today
+
+    elif type == "monthly":
+        start = today.replace(day=1)
+        end = today
+
+    elif type == "custom":
+        if not start_date or not end_date:
+            raise HTTPException(status_code=400, detail="Custom dates required")
+
+        start = datetime.strptime(start_date, "%Y-%m-%d").date()
+        end = datetime.strptime(end_date, "%Y-%m-%d").date()
+
+    else:
+        start = today
+        end = today
+
+    # ===== CONVERT TO DATETIME (IMPORTANT FIX) =====
+
+    start_dt = datetime.combine(start, datetime.min.time())
+    end_dt = datetime.combine(end, datetime.max.time())
 
     # ===== SUMMARY =====
 
@@ -264,7 +473,9 @@ async def email_report(db: Session = Depends(get_db), current_shop=Depends(get_c
         func.count(Bill.id),
         func.avg(Bill.total_amount)
     ).filter(
-        Bill.shop_id == current_shop.id
+        Bill.shop_id == current_shop.id,
+        Bill.created_at >= start_dt,
+        Bill.created_at <= end_dt
     ).first()
 
     summary = {
@@ -273,25 +484,16 @@ async def email_report(db: Session = Depends(get_db), current_shop=Depends(get_c
         "average": float(r[2] or 0)
     }
 
-    # ===== DAILY =====
+    # ===== FETCH REPORT DATA =====
 
-    daily = daily_report(db, current_shop)
-
-    # ===== MONTHLY =====
-
-    monthly = monthly_report(db, current_shop)
-
-    # ===== PRODUCTS =====
-
-    products = top_products(db, current_shop)
-
-    # ===== PEAK HOURS =====
-
-    peak_hours_data = peak_hours(db, current_shop)
+    daily = get_daily_report(db, current_shop, start_dt, end_dt)
+    monthly = get_monthly_report(db, current_shop, start_dt, end_dt)
+    products = get_top_products(db, current_shop, start_dt, end_dt)
+    peak_hours_data = get_peak_hours(db, current_shop, start_dt, end_dt)
 
     # ===== GENERATE PDF =====
 
-    file_path = f"{current_shop.shop_name}_{current_shop.id}_analytics_report_{datetime.now().strftime('%Y-%m-%d')}.pdf"
+    file_path = f"{current_shop.shop_name}_{type}_report_{datetime.now().strftime('%Y-%m-%d')}.pdf"
 
     generate_report_pdf(
         file_path,
@@ -299,15 +501,22 @@ async def email_report(db: Session = Depends(get_db), current_shop=Depends(get_c
         daily,
         monthly,
         products,
-        peak_hours_data
+        peak_hours_data,
+        shop={
+        "name": current_shop.shop_name,
+        "address": current_shop.store_address,
+        "email": current_shop.email,
+        "phone": current_shop.phone,
+        "gstin": current_shop.store_gstin
+        },
     )
 
     # ===== SEND EMAIL =====
 
     message = MessageSchema(
-        subject="Shop Analytics Report",
+        subject=f"{type.upper()} Analytics Report",
         recipients=[current_shop.email],
-        body="Attached is your shop analytics report.",
+        body=f"{type.capitalize()} report attached.",
         subtype="plain",
         attachments=[file_path]
     )
@@ -315,6 +524,110 @@ async def email_report(db: Session = Depends(get_db), current_shop=Depends(get_c
     fm = FastMail(mail_config)
     await fm.send_message(message)
 
+    # ===== CLEANUP =====
+
     if os.path.exists(file_path):
         os.remove(file_path)
-    return {"message": "Report sent successfully"}
+
+    return {"message": f"{type.capitalize()} report sent successfully 📧"}
+
+# ================= INTERNAL HELPERS =================
+
+def get_daily_report(db, current_shop, start, end):
+
+    rows = db.query(
+        func.date(Bill.created_at),
+        func.sum(Bill.total_amount),
+        func.count(Bill.id)
+    ).filter(
+        Bill.shop_id == current_shop.id,
+        Bill.created_at >= start,
+        Bill.created_at <= end
+    ).group_by(
+        func.date(Bill.created_at)
+    ).all()
+
+    return [
+        {
+            "date": str(r[0]),
+            "revenue": float(r[1] or 0),
+            "bills": int(r[2] or 0)
+        }
+        for r in rows
+    ]
+
+
+def get_monthly_report(db, current_shop, start, end):
+
+    rows = db.query(
+        func.date_trunc("month", Bill.created_at),
+        func.sum(Bill.total_amount),
+        func.count(Bill.id)
+    ).filter(
+        Bill.shop_id == current_shop.id,
+        Bill.created_at >= start,
+        Bill.created_at <= end
+    ).group_by(
+        func.date_trunc("month", Bill.created_at)
+    ).all()
+
+    return [
+        {
+            "month": str(r[0]),
+            "revenue": float(r[1] or 0),
+            "bills": int(r[2] or 0)
+        }
+        for r in rows
+    ]
+
+
+def get_top_products(db, current_shop, start, end):
+
+    rows = db.query(
+        BillItem.product_name,
+        func.sum(BillItem.quantity),
+        func.sum(BillItem.subtotal),
+        func.count(Bill.id)
+    ).join(Bill).filter(
+        Bill.shop_id == current_shop.id,
+        Bill.created_at >= start,
+        Bill.created_at <= end
+    ).group_by(
+        BillItem.product_name
+    ).order_by(
+        func.sum(BillItem.quantity).desc()
+    ).limit(10).all()
+
+    return [
+        {
+            "product": r[0],
+            "quantity": int(r[1] or 0),
+            "revenue": float(r[2] or 0),
+            "bills": int(r[3] or 0)
+        }
+        for r in rows
+    ]
+
+
+def get_peak_hours(db, current_shop, start, end):
+
+    rows = db.query(
+        func.extract("hour", Bill.created_at),
+        func.count(Bill.id),
+        func.sum(Bill.total_amount)
+    ).filter(
+        Bill.shop_id == current_shop.id,
+        Bill.created_at >= start,
+        Bill.created_at <= end
+    ).group_by(
+        func.extract("hour", Bill.created_at)
+    ).all()
+
+    return [
+        {
+            "hour": int(r[0]),
+            "bills": int(r[1] or 0),
+            "revenue": float(r[2] or 0)
+        }
+        for r in rows
+    ]
