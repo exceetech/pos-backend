@@ -1,0 +1,4 @@
+echo ".env" >> .gitignore
+echo "firebase-key.json" >> .gitignore
+echo "__pycache__/" >> .gitignore
+echo "*.pyc" >> .gitignore
