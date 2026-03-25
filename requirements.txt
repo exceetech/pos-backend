@@ -16,3 +16,4 @@ reportlab
 firebase-admin
 ollama
 groq
+apscheduler

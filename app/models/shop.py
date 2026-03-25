@@ -25,6 +25,8 @@ class Shop(Base):
 
     created_at = Column(DateTime, default=datetime.utcnow)
 
+    device_id = Column(String, nullable=True)
+
     fcm_token = Column(String, nullable=True)
 
     reset_otp_hash = Column(String, nullable=True)

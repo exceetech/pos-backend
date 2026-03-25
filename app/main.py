@@ -13,6 +13,12 @@ from app.routes import billing_settings_routes
 from app.routes.security_routes import router as security_router
 from app.routes import admin_routes
 from app.routes.analytics_routes import router as analytics_router
+from app.routes import subscription_routes as subscription
+
+
+from apscheduler.schedulers.background import BackgroundScheduler
+from app.database import SessionLocal
+from app.services.expiry_service import check_subscriptions
 
 
 
@@ -43,9 +49,22 @@ app.include_router(billing_settings_routes.router)
 app.include_router(security_router)
 app.include_router(admin_routes.router)
 app.include_router(analytics_router)
+app.include_router(subscription.router)
 
 
 # Root
 @app.get("/")
 def root():
     return {"message": "POS Backend Running Successfully!"}
+
+
+scheduler = BackgroundScheduler()
+def run_expiry_check():
+    db = SessionLocal()
+    check_subscriptions(db)
+    db.close()
+
+
+# ⏰ Runs every 24 hours
+scheduler.add_job(run_expiry_check, "interval", hours=24)
+scheduler.start()

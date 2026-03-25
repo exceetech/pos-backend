@@ -447,8 +447,13 @@ async def email_report(
         end = today
 
     elif type == "monthly":
+
         start = today.replace(day=1)
-        end = today
+
+        if today.month == 12:
+            end = date(today.year + 1, 1, 1)
+        else:
+            end = date(today.year, today.month + 1, 1)
 
     elif type == "custom":
         if not start_date or not end_date:
@@ -560,20 +565,20 @@ def get_daily_report(db, current_shop, start, end):
 def get_monthly_report(db, current_shop, start, end):
 
     rows = db.query(
-        func.date_trunc("month", Bill.created_at),
+        func.to_char(Bill.created_at, 'YYYY-MM'),
         func.sum(Bill.total_amount),
         func.count(Bill.id)
     ).filter(
-        Bill.shop_id == current_shop.id,
-        Bill.created_at >= start,
-        Bill.created_at <= end
+        Bill.shop_id == current_shop.id
     ).group_by(
-        func.date_trunc("month", Bill.created_at)
+        func.to_char(Bill.created_at, 'YYYY-MM')
+    ).order_by(
+        func.to_char(Bill.created_at, 'YYYY-MM')
     ).all()
 
     return [
         {
-            "month": str(r[0]),
+            "month": r[0],
             "revenue": float(r[1] or 0),
             "bills": int(r[2] or 0)
         }

@@ -1,6 +1,6 @@
 from app.schemas.SaveTokenRequest import SaveTokenRequest
 from app.schemas.VerifyPasswordRequest import VerifyPasswordRequest
-from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks, Form
+from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks, Form, Request
 from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy.orm import Session
 
@@ -58,9 +58,16 @@ def register(shop: ShopRegister, db: Session = Depends(get_db)):
 
 @router.post("/login")
 def login(
+    request: Request,
     form_data: OAuth2PasswordRequestForm = Depends(),
     db: Session = Depends(get_db)
 ):
+
+    # 🔥 GET DEVICE ID FROM HEADER
+    device_id = request.headers.get("device_id")
+
+    if not device_id:
+        raise HTTPException(status_code=400, detail="Device ID missing")
 
     shop = db.query(Shop).filter(Shop.email == form_data.username).first()
 
@@ -72,20 +79,36 @@ def login(
 
     from app.security import hash_password
 
-    # check if password stored is NOT hashed
+    # 🔐 PASSWORD CHECK (UNCHANGED)
     if not shop.password_hash.startswith("$2b$"):
 
-        # first login after upgrade
         if form_data.password != shop.password_hash:
             raise HTTPException(status_code=401, detail="Invalid credentials")
 
-        # convert plaintext password to hash
         shop.password_hash = hash_password(shop.password_hash)
         db.commit()
 
     else:
         if not verify_password(form_data.password, shop.password_hash):
             raise HTTPException(status_code=401, detail="Invalid credentials")
+
+    # =====================================================
+    # 🔥 DEVICE LOCK LOGIC (NEW)
+    # =====================================================
+
+    # First login → bind device
+    if not shop.device_id:
+        shop.device_id = device_id
+        db.commit()
+
+    # Already bound → check device
+    elif shop.device_id != device_id:
+        raise HTTPException(
+            status_code=403,
+            detail="This account is already logged in on another device"
+        )
+
+    # =====================================================
 
     access_token = create_access_token(data={"shop_id": shop.id})
 
@@ -94,7 +117,6 @@ def login(
         "token_type": "bearer",
         "is_first_login": shop.is_first_login
     }
-
 
 # ================= ACTIVATE SHOP =================
 @router.post("/activate-shop")
@@ -303,3 +325,15 @@ def reset_password(
     db.commit()
 
     return {"message": "Password reset successful"}
+
+# ================= RESET DEVICE (ADMIN) =================
+
+@router.post("/reset-device/{shop_id}")
+def reset_device(shop_id: int, db: Session = Depends(get_db)):
+
+    shop = db.query(Shop).filter(Shop.id == shop_id).first()
+
+    shop.device_id = None
+    db.commit()
+
+    return {"message": "Device reset"}
