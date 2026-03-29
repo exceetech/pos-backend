@@ -11,6 +11,8 @@ from app.schemas.bill_schema import CreateBillRequest
 from app.dependencies import get_current_shop
 from app.models.billing_settings import BillingSettings
 
+from sqlalchemy.exc import IntegrityError
+
 router = APIRouter(prefix="/bills", tags=["Bills"])
 
 
@@ -26,6 +28,13 @@ def create_bill(
     total_amount = 0
     total_items = 0
     discount = data.discount
+
+    # 🔥 GENERATE BILL NUMBER
+    last_bill = db.query(Bill).filter(
+        Bill.shop_id == current_shop.id
+    ).order_by(Bill.id.desc()).first()
+
+    next_bill_number = 500000 if not last_bill else int(last_bill.bill_number) + 1
 
     # ================= LOAD DEFAULT GST =================
     settings = db.query(BillingSettings).filter(
@@ -72,7 +81,7 @@ def create_bill(
 
     bill = Bill(
         shop_id=current_shop.id,
-        bill_number=data.bill_number,
+        bill_number=str(next_bill_number),  # ✅ GENERATED
         total_amount=final_total,
         total_items=total_items,
         payment_method=data.payment_method,
@@ -118,7 +127,8 @@ def get_bill(
 
     bill = db.query(Bill).filter(
         Bill.id == bill_id,
-        Bill.shop_id == current_shop.id
+        Bill.shop_id == current_shop.id,
+        Bill.active == True
     ).first()
 
     if not bill:
@@ -164,7 +174,8 @@ def get_bills(
 ):
 
     query = db.query(Bill).filter(
-        Bill.shop_id == current_shop.id
+        Bill.shop_id == current_shop.id,
+        Bill.active == True
     )
 
     if payment:

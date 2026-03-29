@@ -55,7 +55,7 @@ def factory_reset(
     current_shop = Depends(get_current_shop)
 ):
 
-    # deactivate bills
+    # ✅ deactivate bills
     bills = db.query(Bill).filter(
         Bill.shop_id == current_shop.id
     ).all()
@@ -63,8 +63,7 @@ def factory_reset(
     for bill in bills:
         bill.active = False
 
-
-    # deactivate products
+    # ✅ deactivate products
     products = db.query(ShopProduct).filter(
         ShopProduct.shop_id == current_shop.id
     ).all()
@@ -72,11 +71,19 @@ def factory_reset(
     for p in products:
         p.is_active = False
 
-
-    # remove billing settings
+    # ✅ delete billing settings
     db.query(BillingSettings).filter(
         BillingSettings.shop_id == current_shop.id
     ).delete()
+
+    # 🔥 ADD THIS (CRITICAL FIX)
+    current_shop.shop_name = "My Shop"
+    current_shop.store_address = None
+    current_shop.phone = None
+    current_shop.store_gstin = None
+
+
+    current_shop.last_bill_number = 0
 
     db.commit()
 

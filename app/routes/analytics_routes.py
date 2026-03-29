@@ -9,8 +9,11 @@ from app.models.global_products import GlobalProduct
 
 from app.services.ai_service import generate_ai_insights
 from app.dependencies import get_current_shop
+from app.models.bill import Bill
 
 router = APIRouter()
+
+
 
 
 @router.get("/analytics/ai-report")
@@ -25,11 +28,24 @@ def get_ai_report(
         db.query(
             GlobalProduct.name.label("product"),
             func.sum(BillItem.quantity).label("quantity"),
-            func.sum(BillItem.subtotal).label("revenue")
+
+            # 🔥 FIXED REVENUE CALCULATION
+            func.sum(
+                BillItem.subtotal *
+                (Bill.total_amount / (
+                    (Bill.total_amount - Bill.gst + Bill.discount)
+                    if (Bill.total_amount - Bill.gst + Bill.discount) != 0 else 1
+                ))
+            ).label("revenue")
+
         )
+        .join(Bill, Bill.id == BillItem.bill_id)
         .join(ShopProduct, ShopProduct.id == BillItem.shop_product_id)
         .join(GlobalProduct, GlobalProduct.id == ShopProduct.global_product_id)
-        .filter(ShopProduct.shop_id == shop_id)
+        .filter(
+            ShopProduct.shop_id == shop_id,
+            Bill.active == True
+        )
         .group_by(GlobalProduct.name)
         .all()
     )
@@ -43,7 +59,6 @@ def get_ai_report(
         for r in results
     ]
 
-    # If no sales yet
     if not report_data:
         return {
             "report_data": [],

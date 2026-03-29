@@ -32,26 +32,36 @@ router = APIRouter(prefix="/auth", tags=["Authentication"])
 @router.post("/register")
 def register(shop: ShopRegister, db: Session = Depends(get_db)):
 
-    existing = db.query(Shop).filter(Shop.email == shop.email).first()
+    email = shop.email.strip().lower()
+
+    existing = db.query(Shop).filter(Shop.email == email).first()
     if existing:
         raise HTTPException(status_code=400, detail="Email already registered")
 
     new_shop = Shop(
         shop_name=shop.shop_name,
         owner_name=shop.owner_name,
-        email=shop.email,
+        email=email,
         phone=shop.phone,
         status="PENDING"
     )
 
     db.add(new_shop)
     db.commit()
-    db.refresh(new_shop)
 
-    # Send emails
-    send_registration_emails(new_shop)
+    # 🔥 REUSE FORGOT PASSWORD FLOW
+    otp = str(secrets.randbelow(900000) + 100000)
+    otp_hash = hashlib.sha256(otp.encode()).hexdigest()
 
-    return {"message": "Registration received. We will contact you soon."}
+    new_shop.reset_otp_hash = otp_hash
+    new_shop.reset_otp_expiry = datetime.utcnow() + timedelta(minutes=5)
+    new_shop.reset_otp_attempts = 0
+
+    db.commit()
+
+    send_otp_email(new_shop, otp)
+
+    return {"message": "OTP sent to email"}
 
 
 # ================= LOGIN =================
@@ -111,6 +121,10 @@ def login(
     # =====================================================
 
     access_token = create_access_token(data={"shop_id": shop.id})
+    
+    if shop.is_first_login:
+        shop.is_first_login = False
+        db.commit()
 
     return {
         "access_token": access_token,
@@ -118,25 +132,25 @@ def login(
         "is_first_login": shop.is_first_login
     }
 
-# ================= ACTIVATE SHOP =================
-@router.post("/activate-shop")
-def activate_shop(data: ShopActivate, db: Session = Depends(get_db)):
+# # ================= ACTIVATE SHOP =================
+# @router.post("/activate-shop")
+# def activate_shop(data: ShopActivate, db: Session = Depends(get_db)):
 
-    shop = db.query(Shop).filter(Shop.email == data.email).first()
+#     shop = db.query(Shop).filter(Shop.email == data.email).first()
 
-    if not shop:
-        raise HTTPException(status_code=404, detail="Shop not found")
+#     if not shop:
+#         raise HTTPException(status_code=404, detail="Shop not found")
 
-    if shop.status == "ACTIVE":
-        raise HTTPException(status_code=400, detail="Shop already active")
+#     if shop.status == "ACTIVE":
+#         raise HTTPException(status_code=400, detail="Shop already active")
 
-    shop.password_hash = hash_password(data.temporary_password)
-    shop.status = "ACTIVE"
-    shop.is_first_login = True
+#     shop.password_hash = hash_password(data.temporary_password)
+#     shop.status = "ACTIVE"
+#     shop.is_first_login = True
 
-    db.commit()
+#     db.commit()
 
-    return {"message": "Shop activated successfully"}
+#     return {"message": "Shop activated successfully"}
 
 
 # ================= GET MY PROFILE =================
@@ -321,6 +335,7 @@ def reset_password(
         raise HTTPException(status_code=404, detail="Shop not found")
 
     shop.password_hash = hash_password(data.new_password)
+    shop.status = "ACTIVE"
 
     db.commit()
 

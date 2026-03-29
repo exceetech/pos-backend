@@ -34,7 +34,8 @@ def daily_report(db: Session = Depends(get_db), current_shop=Depends(get_current
         func.sum(Bill.total_amount),
         func.count(Bill.id)
     ).filter(
-        Bill.shop_id == current_shop.id
+        Bill.shop_id == current_shop.id,
+        Bill.active == True
     ).group_by(
         func.date(Bill.created_at)
     ).order_by(
@@ -61,7 +62,8 @@ def monthly_report(db: Session = Depends(get_db), current_shop=Depends(get_curre
         func.sum(Bill.total_amount),
         func.count(Bill.id)
     ).filter(
-        Bill.shop_id == current_shop.id
+        Bill.shop_id == current_shop.id,
+        Bill.active == True
     ).group_by(
         func.date_trunc("month", Bill.created_at)
     ).order_by(
@@ -88,7 +90,8 @@ def yearly_report(db: Session = Depends(get_db), current_shop=Depends(get_curren
         func.sum(Bill.total_amount),
         func.count(Bill.id)
     ).filter(
-        Bill.shop_id == current_shop.id
+        Bill.shop_id == current_shop.id,
+        Bill.active == True
     ).group_by(
         func.extract("year", Bill.created_at)
     ).order_by(
@@ -115,7 +118,8 @@ def top_products(db: Session = Depends(get_db), current_shop=Depends(get_current
         func.sum(BillItem.quantity),
         func.sum(BillItem.subtotal)
     ).join(Bill).filter(
-        Bill.shop_id == current_shop.id
+        Bill.shop_id == current_shop.id,
+        Bill.active == True
     ).group_by(
         BillItem.product_name
     ).order_by(
@@ -148,7 +152,8 @@ def peak_hours(
         func.count(Bill.id),
         func.sum(Bill.total_amount)
     ).filter(
-        Bill.shop_id == current_shop.id
+        Bill.shop_id == current_shop.id,
+        Bill.active == True
     )
 
     now = datetime.utcnow()
@@ -292,6 +297,7 @@ def average_bill(
         func.avg(Bill.total_amount)
     ).filter(
         Bill.shop_id == current_shop.id,
+        Bill.active == True,
         Bill.created_at >= start,
         Bill.created_at < end
     ).first()
@@ -302,6 +308,7 @@ def average_bill(
         func.avg(Bill.total_amount)
     ).filter(
         Bill.shop_id == current_shop.id,
+        Bill.active == True,
         Bill.created_at >= prev_start,
         Bill.created_at < prev_end
     ).first()
@@ -329,6 +336,7 @@ def sales_trend(db: Session = Depends(get_db), current_shop=Depends(get_current_
         func.sum(Bill.total_amount)
     ).filter(
         Bill.shop_id == current_shop.id,
+        Bill.active == True,
         Bill.created_at >= last_30_days
     ).group_by(
         func.date(Bill.created_at)
@@ -346,6 +354,9 @@ def sales_trend(db: Session = Depends(get_db), current_shop=Depends(get_current_
 
 # ================= TODAY'S HOURLY SALES =================
 
+from datetime import date
+from sqlalchemy import func
+
 @router.get("/today-hourly")
 def today_hourly_sales(
     db: Session = Depends(get_db),
@@ -358,7 +369,11 @@ def today_hourly_sales(
             func.count(Bill.id).label("bills"),
             func.sum(Bill.total_amount).label("revenue"),
         )
-        .filter(func.date(Bill.created_at) == date.today())
+        .filter(
+            Bill.shop_id == current_shop.id,   # 🔥 CRITICAL FIX
+            Bill.active == True,               # 🔥 IMPORTANT
+            func.date(Bill.created_at) == date.today()
+        )
         .group_by(func.extract("hour", Bill.created_at))
         .order_by(func.extract("hour", Bill.created_at))
         .all()
@@ -382,7 +397,8 @@ def top_revenue_products(db: Session = Depends(get_db), current_shop=Depends(get
         BillItem.product_name,
         func.sum(BillItem.subtotal)
     ).join(Bill).filter(
-        Bill.shop_id == current_shop.id
+        Bill.shop_id == current_shop.id,
+        Bill.active == True
     ).group_by(
         BillItem.product_name
     ).order_by(
@@ -407,7 +423,8 @@ def weekday_analysis(db: Session = Depends(get_db), current_shop=Depends(get_cur
         func.extract("dow", Bill.created_at),
         func.sum(Bill.total_amount)
     ).filter(
-        Bill.shop_id == current_shop.id
+        Bill.shop_id == current_shop.id,
+        Bill.active == True
     ).group_by(
         func.extract("dow", Bill.created_at)
     ).order_by(
@@ -479,6 +496,7 @@ async def email_report(
         func.avg(Bill.total_amount)
     ).filter(
         Bill.shop_id == current_shop.id,
+        Bill.active == True,
         Bill.created_at >= start_dt,
         Bill.created_at <= end_dt
     ).first()
@@ -546,6 +564,7 @@ def get_daily_report(db, current_shop, start, end):
         func.count(Bill.id)
     ).filter(
         Bill.shop_id == current_shop.id,
+        Bill.active == True,
         Bill.created_at >= start,
         Bill.created_at <= end
     ).group_by(
@@ -569,7 +588,8 @@ def get_monthly_report(db, current_shop, start, end):
         func.sum(Bill.total_amount),
         func.count(Bill.id)
     ).filter(
-        Bill.shop_id == current_shop.id
+        Bill.shop_id == current_shop.id,
+        Bill.active == True
     ).group_by(
         func.to_char(Bill.created_at, 'YYYY-MM')
     ).order_by(
@@ -595,6 +615,7 @@ def get_top_products(db, current_shop, start, end):
         func.count(Bill.id)
     ).join(Bill).filter(
         Bill.shop_id == current_shop.id,
+        Bill.active == True,
         Bill.created_at >= start,
         Bill.created_at <= end
     ).group_by(
@@ -622,6 +643,7 @@ def get_peak_hours(db, current_shop, start, end):
         func.sum(Bill.total_amount)
     ).filter(
         Bill.shop_id == current_shop.id,
+        Bill.active == True,
         Bill.created_at >= start,
         Bill.created_at <= end
     ).group_by(

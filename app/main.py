@@ -68,3 +68,6 @@ def run_expiry_check():
 # ⏰ Runs every 24 hours
 scheduler.add_job(run_expiry_check, "interval", hours=24)
 scheduler.start()
+
+
+#READY FOR AWS HOSTING

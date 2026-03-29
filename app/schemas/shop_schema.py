@@ -16,17 +16,17 @@ class ShopActivate(BaseModel):
     temporary_password: str
 
 class ShopSettingsResponse(BaseModel):
-    shop_name: str
+    shop_name: str | None
     store_address: str | None
     phone: str | None
     store_gstin: str | None
 
 
 class ShopSettingsUpdate(BaseModel):
-    shop_name: str
-    store_address: str
-    phone: str
-    store_gstin: str
-    
+    shop_name: str | None
+    store_address: str | None
+    phone: str | None
+    store_gstin: str | None
+
 class ForgotPasswordRequest(BaseModel):
     email: EmailStr
