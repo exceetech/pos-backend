@@ -74,7 +74,7 @@ def login(
 ):
 
     # 🔥 GET DEVICE ID FROM HEADER
-    device_id = request.headers.get("device_id")
+    device_id = request.headers.get("device-id")
 
     if not device_id:
         raise HTTPException(status_code=400, detail="Device ID missing")

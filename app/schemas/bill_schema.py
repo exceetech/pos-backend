@@ -7,7 +7,6 @@ class BillItemRequest(BaseModel):
 
 
 class CreateBillRequest(BaseModel):
-    bill_number: str
     items: List[BillItemRequest]
     payment_method: str
     discount: float
