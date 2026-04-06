@@ -17,3 +17,5 @@ firebase-admin
 ollama
 groq
 apscheduler
+gunicorn
+postgresql

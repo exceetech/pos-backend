@@ -19,6 +19,7 @@ from app.routes import subscription_routes as subscription
 from apscheduler.schedulers.background import BackgroundScheduler
 from app.database import SessionLocal
 from app.services.expiry_service import check_subscriptions
+from app.routes import credit_routes as credit
 
 
 
@@ -50,6 +51,7 @@ app.include_router(security_router)
 app.include_router(admin_routes.router)
 app.include_router(analytics_router)
 app.include_router(subscription.router)
+app.include_router(credit.router)
 
 
 # Root
