@@ -51,8 +51,6 @@ def sync_credit(data: CreditTransactionCreate, db: Session = Depends(get_db)):
 
     elif data.type == "PAY":
         account.due_amount -= data.amount
-        if account.due_amount < 0:
-            account.due_amount = 0
 
     elif data.type == "SETTLE":
         account.due_amount = 0
@@ -78,3 +76,10 @@ def search_accounts(query: str, db: Session = Depends(get_db)):
         CreditAccount.name.ilike(f"%{query}%") |
         CreditAccount.phone.ilike(f"%{query}%")
     ).all()
+
+@router.get("/transactions/{account_id}")
+def get_transactions(account_id: int, db: Session = Depends(get_db)):
+    return db.query(CreditTransaction)\
+        .filter(CreditTransaction.account_id == account_id)\
+        .order_by(CreditTransaction.id.desc())\
+        .all()

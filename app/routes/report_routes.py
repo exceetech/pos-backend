@@ -460,8 +460,14 @@ async def email_report(
         end = today
 
     elif type == "weekly":
-        start = today - timedelta(days=6)
-        end = today
+
+        today = date.today()
+
+        days_since_sunday = (today.weekday() + 1) % 7
+
+        start = today - timedelta(days=days_since_sunday)
+
+        end = start + timedelta(days=6)
 
     elif type == "monthly":
 
@@ -589,7 +595,9 @@ def get_monthly_report(db, current_shop, start, end):
         func.count(Bill.id)
     ).filter(
         Bill.shop_id == current_shop.id,
-        Bill.active == True
+        Bill.active == True,
+        Bill.created_at >= start,
+        Bill.created_at <= end        
     ).group_by(
         func.to_char(Bill.created_at, 'YYYY-MM')
     ).order_by(
