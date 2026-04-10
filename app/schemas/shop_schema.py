@@ -30,3 +30,9 @@ class ShopSettingsUpdate(BaseModel):
 
 class ForgotPasswordRequest(BaseModel):
     email: EmailStr
+
+class LoginResponse(BaseModel):
+    access_token: str
+    token_type: str
+    is_first_login: bool
+    shop_id: int

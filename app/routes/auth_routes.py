@@ -129,7 +129,8 @@ def login(
     return {
         "access_token": access_token,
         "token_type": "bearer",
-        "is_first_login": shop.is_first_login
+        "is_first_login": shop.is_first_login,
+        "shop_id": shop.id
     }
 
 # # ================= ACTIVATE SHOP =================

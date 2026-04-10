@@ -23,7 +23,6 @@ def get_current_shop_id(token: str = Depends(oauth2_scheme)):
 
     return shop_id
 
-
 # ================= CREATE ACCOUNT =================
 @router.post("/account")
 def create_account(
@@ -38,13 +37,33 @@ def create_account(
     ).first()
 
     if existing:
+
+        # 🔥 CASE 1: RESTORE ACCOUNT
         if not existing.is_active:
             existing.is_active = True
-            existing.name = data.name
+
+            # ✅ update name if different
+            if data.name and data.name != existing.name:
+                existing.name = data.name
+
             db.commit()
             db.refresh(existing)
-        return existing
 
+            return {
+                "id": existing.id,
+                "name": existing.name,
+                "phone": existing.phone,
+                "due_amount": existing.due_amount,
+                "restored": True   # 🔥 IMPORTANT FLAG
+            }
+
+        # 🔥 CASE 2: ALREADY EXISTS
+        raise HTTPException(
+            status_code=400,
+            detail="Account already exists"
+        )
+
+    # 🔥 CASE 3: CREATE NEW
     account = CreditAccount(
         name=data.name,
         phone=data.phone,
@@ -57,8 +76,13 @@ def create_account(
     db.commit()
     db.refresh(account)
 
-    return account
-
+    return {
+        "id": account.id,
+        "name": account.name,
+        "phone": account.phone,
+        "due_amount": account.due_amount,
+        "restored": False
+    }
 
 # ================= GET ACCOUNTS =================
 @router.get("/accounts")
