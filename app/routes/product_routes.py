@@ -36,11 +36,11 @@ def add_to_shop(
 ):
     normalized = normalize_name(data.name)
 
-    global_product = db.query(GlobalProduct)\
-        .filter(GlobalProduct.name == normalized)\
-        .first()
+    # 🔹 Get or create global product
+    global_product = db.query(GlobalProduct).filter(
+        GlobalProduct.name == normalized
+    ).first()
 
-    # If product doesn't exist globally, create it
     if not global_product:
         global_product = GlobalProduct(
             name=normalized,
@@ -51,27 +51,43 @@ def add_to_shop(
         db.commit()
         db.refresh(global_product)
 
-    # Prevent duplicate product for same shop
+    # 🔥 IMPORTANT: normalize variant + unit
+    variant = data.variant_name.strip() if data.variant_name else None
+    unit = (data.unit or "unit").lower().strip()
+
+    
     existing_shop_product = db.query(ShopProduct).filter(
-    ShopProduct.shop_id == current_shop.id,
-    ShopProduct.global_product_id == global_product.id
+        ShopProduct.shop_id == current_shop.id,
+        ShopProduct.global_product_id == global_product.id,
+        ShopProduct.unit == unit,
+        (
+            ShopProduct.variant_name.is_(None)
+            if variant is None
+            else ShopProduct.variant_name == variant
+        )
     ).first()
 
     if existing_shop_product:
 
+        # ✅ If already active → UPDATE price (NO ERROR)
         if existing_shop_product.is_active:
-            raise HTTPException(status_code=400, detail="Product already added")
+            existing_shop_product.price = data.price
+            db.commit()
+            return {"message": "Variant price updated"}
 
-        # 🔥 Reactivate instead of error
+        # ♻️ Reactivate
         existing_shop_product.is_active = True
-        existing_shop_product.price = data.price  # update price if needed
+        existing_shop_product.price = data.price
         db.commit()
 
-        return {"message": "Product reactivated"}
+        return {"message": "Variant reactivated"}
 
+    # ✅ Create new variant
     shop_product = ShopProduct(
         shop_id=current_shop.id,
         global_product_id=global_product.id,
+        variant_name=variant,
+        unit=unit,
         price=data.price
     )
 
@@ -91,32 +107,36 @@ def get_my_products(
     results = db.query(
         ShopProduct.id,
         ShopProduct.price,
+        ShopProduct.variant_name,
+        ShopProduct.unit,
         GlobalProduct.name
     ).join(
         GlobalProduct,
         ShopProduct.global_product_id == GlobalProduct.id
     ).filter(
         ShopProduct.shop_id == current_shop.id,
-        ShopProduct.is_active == True 
+        ShopProduct.is_active == True
     ).all()
 
     return [
         {
             "id": r.id,
             "name": r.name,
+            "variant": r.variant_name,   # ✅ match Android model
+            "unit": r.unit,
             "price": r.price
         }
         for r in results
     ]
 
 
-# ================= VERIFY PRODUCT (ADMIN ONLY LATER) =================
+# ================= VERIFY PRODUCT =================
 @router.put("/verify-product/{product_id}")
 def verify_product(product_id: int, db: Session = Depends(get_db)):
 
-    product = db.query(GlobalProduct)\
-        .filter(GlobalProduct.id == product_id)\
-        .first()
+    product = db.query(GlobalProduct).filter(
+        GlobalProduct.id == product_id
+    ).first()
 
     if not product:
         raise HTTPException(status_code=404, detail="Product not found")
@@ -125,6 +145,7 @@ def verify_product(product_id: int, db: Session = Depends(get_db)):
     db.commit()
 
     return {"message": "Product verified successfully"}
+
 
 # ================= DEACTIVATE PRODUCT =================
 @router.put("/deactivate/{product_id}")
