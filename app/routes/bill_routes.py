@@ -6,12 +6,10 @@ from app.models.bill import Bill
 from app.models.bill_items import BillItem
 from app.models.shop_products import ShopProduct
 from app.models.global_products import GlobalProduct
+from app.models.billing_settings import BillingSettings
 
 from app.schemas.bill_schema import CreateBillRequest
 from app.dependencies import get_current_shop
-from app.models.billing_settings import BillingSettings
-
-from sqlalchemy.exc import IntegrityError
 
 router = APIRouter(prefix="/bills", tags=["Bills"])
 
@@ -25,18 +23,18 @@ def create_bill(
     current_shop = Depends(get_current_shop)
 ):
 
-    total_amount = 0
-    total_items = 0
-    discount = data.discount
+    total_amount = 0.0
+    total_items = 0.0
+    discount = data.discount or 0.0
 
-    # 🔥 GENERATE BILL NUMBER
+    # 🔥 BILL NUMBER
     last_bill = db.query(Bill).filter(
         Bill.shop_id == current_shop.id
     ).order_by(Bill.id.desc()).first()
 
     next_bill_number = 500000 if not last_bill else int(last_bill.bill_number) + 1
 
-    # ================= LOAD DEFAULT GST =================
+    # 🔥 GST SETTINGS
     settings = db.query(BillingSettings).filter(
         BillingSettings.shop_id == current_shop.id
     ).first()
@@ -61,29 +59,33 @@ def create_bill(
 
         shop_product, global_product = product
 
-        subtotal = shop_product.price * item.quantity
+        # ✅ NO CONVERSION (IMPORTANT)
+        quantity = item.quantity
+
+        subtotal = shop_product.price * quantity
 
         total_amount += subtotal
-        total_items += item.quantity
+        total_items += quantity
 
         bill_items.append({
             "product_name": global_product.name,
             "price": shop_product.price,
-            "quantity": item.quantity,
+            "quantity": quantity,
+            "unit": shop_product.unit or "unit",
+            "variant": item.variant,
             "subtotal": subtotal,
             "shop_product_id": shop_product.id
         })
 
-    # ================= CALCULATE GST =================
+    # 🔥 GST
     gst = total_amount * gst_rate / 100
-
     final_total = total_amount + gst - discount
 
     bill = Bill(
         shop_id=current_shop.id,
-        bill_number=str(next_bill_number),  # ✅ GENERATED
+        bill_number=str(next_bill_number),
         total_amount=final_total,
-        total_items=total_items,
+        total_items=total_items,   # ✅ FLOAT
         payment_method=data.payment_method,
         gst=gst,
         discount=discount
@@ -93,7 +95,7 @@ def create_bill(
     db.commit()
     db.refresh(bill)
 
-    # ================= INSERT BILL ITEMS =================
+    # 🔥 INSERT BILL ITEMS
     for i in bill_items:
 
         bill_item = BillItem(
@@ -102,6 +104,8 @@ def create_bill(
             product_name=i["product_name"],
             price=i["price"],
             quantity=i["quantity"],
+            unit=i["unit"],
+            variant=i.get("variant"),
             subtotal=i["subtotal"]
         )
 
@@ -115,6 +119,7 @@ def create_bill(
         "bill_number": bill.bill_number,
         "total_amount": final_total
     }
+
 
 # ================= GET SINGLE BILL =================
 
@@ -139,26 +144,29 @@ def get_bill(
     ).all()
 
     return {
-    "bill": {
-        "bill_id": bill.id,
-        "bill_number": bill.bill_number,
-        "subtotal": bill.total_amount - bill.gst + bill.discount,
-        "gst": bill.gst,
-        "discount": bill.discount,
-        "total_amount": bill.total_amount,
-        "payment_method": bill.payment_method,
-        "created_at": str(bill.created_at)
-    },
-    "items": [
-        {
-            "product_name": i.product_name,
-            "price": i.price,
-            "quantity": i.quantity,
-            "subtotal": i.subtotal
-        }
-        for i in items
-    ]
-}
+        "bill": {
+            "bill_id": bill.id,
+            "bill_number": bill.bill_number,
+            "subtotal": bill.total_amount - bill.gst + bill.discount,
+            "gst": bill.gst,
+            "discount": bill.discount,
+            "total_amount": bill.total_amount,
+            "payment_method": bill.payment_method,
+            "created_at": str(bill.created_at)
+        },
+        "items": [
+            {
+                "product_name": item.product_name,
+                "price": item.price,
+                "quantity": item.quantity,
+                "unit": item.unit,
+                "variant": item.variant,
+                "shop_product_id": item.shop_product_id,
+                "subtotal": item.subtotal
+            }
+            for item in items
+        ]
+    }
 
 
 # ================= GET ALL BILLS =================
