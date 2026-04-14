@@ -16,4 +16,4 @@ class BillItem(Base):
     variant = Column(String, nullable=True)
     price = Column(Float, nullable=False)
     subtotal = Column(Float, nullable=False)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=datetime.now)

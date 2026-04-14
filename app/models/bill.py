@@ -22,4 +22,4 @@ class Bill(Base):
 
     active = Column(Boolean, default=True)
 
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=datetime.now)
