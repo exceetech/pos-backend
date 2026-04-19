@@ -111,28 +111,57 @@ def yearly_report(db: Session = Depends(get_db), current_shop=Depends(get_curren
 # ================= TOP PRODUCTS =================
 
 @router.get("/top-products")
-def top_products(db: Session = Depends(get_db), current_shop=Depends(get_current_shop)):
+def top_products(
+    type: str = "today",
+    start: str = None,
+    end: str = None,
+    db: Session = Depends(get_db),
+    current_shop=Depends(get_current_shop)
+):
 
-    rows = db.query(
-        BillItem.product_name,
-        func.sum(BillItem.quantity),
-        func.sum(BillItem.subtotal)
+    query = db.query(
+    BillItem.product_name,
+    BillItem.variant,  # 🔥 ADD THIS
+    func.sum(BillItem.quantity),
+    func.sum(BillItem.subtotal)
     ).join(Bill).filter(
-        Bill.shop_id == current_shop.id,
-        Bill.active == True
-    ).group_by(
-        BillItem.product_name
+    Bill.shop_id == current_shop.id,
+    Bill.active == True
+)
+
+    # ✅ TODAY FILTER
+    if type == "today":
+        today = date.today()
+        query = query.filter(func.date(Bill.created_at) == today)
+
+    # ✅ CUSTOM (USED FOR WEEK / MONTH / YEAR ALSO)
+    elif type == "custom" and start and end:
+        try:
+            start_date = datetime.strptime(start, "%Y-%m-%d").date()
+            end_date = datetime.strptime(end, "%Y-%m-%d").date()
+
+            query = query.filter(
+                func.date(Bill.created_at) >= start_date,
+                func.date(Bill.created_at) <= end_date
+            )
+        except Exception as e:
+            print("Date parse error:", e)
+
+    rows = query.group_by(
+    BillItem.product_name,
+    BillItem.variant   # 🔥 MUST ADD
     ).order_by(
-        func.sum(BillItem.quantity).desc()
+    func.sum(BillItem.quantity).desc()
     ).limit(10).all()
 
     return [
-        {
-            "product": r[0],
-            "quantity": int(r[1] or 0),
-            "revenue": float(r[2] or 0)
-        }
-        for r in rows
+    {
+        "product": r[0],
+        "variant": r[1],   # 🔥 ADD THIS
+        "quantity": int(r[2] or 0),
+        "revenue": float(r[3] or 0)
+    }
+    for r in rows
     ]
 
 
