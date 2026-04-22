@@ -21,6 +21,8 @@ from app.database import SessionLocal
 from app.services.expiry_service import check_subscriptions
 from app.routes import credit_routes as credit
 
+from app.routes import inventory_routes
+
 
 
 app = FastAPI(
@@ -52,7 +54,7 @@ app.include_router(admin_routes.router)
 app.include_router(analytics_router)
 app.include_router(subscription.router)
 app.include_router(credit.router)
-
+app.include_router(inventory_routes.router)
 
 # Root
 @app.get("/")

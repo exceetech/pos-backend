@@ -7,6 +7,10 @@ class AddProductRequest(BaseModel):
     unit: Optional[str] = "unit"
     price: float
 
+    initial_stock: Optional[float] = 0
+
+    cost_price: Optional[float] = 0
+
 class ProductResponse(BaseModel):
     id: int
     name: str
