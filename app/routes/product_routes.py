@@ -13,6 +13,7 @@ from app.utils import normalize_name
 
 router = APIRouter(prefix="/products", tags=["Products"])
 
+
 # ================= CATALOG =================
 @router.get("/catalog")
 def get_catalog(
@@ -26,7 +27,61 @@ def get_catalog(
         )
     ).all()
 
-# ================= ADD PRODUCT TO SHOP =================
+
+# ================= CHECK PRODUCT (NEW 🔥) =================
+@router.post("/check")
+def check_product(
+    data: AddProductRequest,
+    db: Session = Depends(get_db),
+    current_shop: Shop = Depends(get_current_shop)
+):
+    normalized = normalize_name(data.name)
+
+    global_product = db.query(GlobalProduct).filter(
+        GlobalProduct.name == normalized
+    ).first()
+
+    if not global_product:
+        return {"exists": False}
+
+    variant = data.variant_name.strip() if data.variant_name else None
+    unit = (data.unit or "piece").lower().strip()
+
+    existing = db.query(ShopProduct).filter(
+        ShopProduct.shop_id == current_shop.id,
+        ShopProduct.global_product_id == global_product.id,
+        ShopProduct.unit == unit,
+        (
+            ShopProduct.variant_name.is_(None)
+            if variant is None
+            else ShopProduct.variant_name == variant
+        )
+    ).first()
+
+    if not existing:
+        return {"exists": False}
+
+    inventory = db.query(Inventory).filter(
+        Inventory.product_id == existing.id,
+        Inventory.shop_id == current_shop.id
+    ).first()
+
+    return {
+        "exists": True,
+        "product": {
+            "id": existing.id,
+            "price": existing.price,
+            "variant": existing.variant_name,
+            "unit": existing.unit,
+            "has_inventory": inventory is not None,
+            "stock": inventory.current_stock if inventory else 0,
+            "avg_cost": inventory.average_cost if inventory else 0,
+            "is_active": existing.is_active
+        }
+    }
+
+
+# ================= ADD PRODUCT =================
 @router.post("/add-to-shop")
 def add_to_shop(
     data: AddProductRequest,
@@ -35,7 +90,6 @@ def add_to_shop(
 ):
     normalized = normalize_name(data.name)
 
-    # ================= GLOBAL PRODUCT =================
     global_product = db.query(GlobalProduct).filter(
         GlobalProduct.name == normalized
     ).first()
@@ -50,11 +104,9 @@ def add_to_shop(
         db.commit()
         db.refresh(global_product)
 
-    # ================= NORMALIZE =================
     variant = data.variant_name.strip() if data.variant_name else None
-    unit = (data.unit or "unit").lower().strip()
+    unit = (data.unit or "piece").lower().strip()
 
-    # ================= CHECK EXISTING =================
     existing = db.query(ShopProduct).filter(
         ShopProduct.shop_id == current_shop.id,
         ShopProduct.global_product_id == global_product.id,
@@ -67,7 +119,7 @@ def add_to_shop(
     ).first()
 
     # =========================================================
-    # 🔁 EXISTING PRODUCT
+    # 🔁 EXISTING PRODUCT (RESTORE / UPDATE)
     # =========================================================
     if existing:
 
@@ -77,24 +129,37 @@ def add_to_shop(
         db.commit()
         db.refresh(existing)
 
-        # 🔥 INVENTORY FIX
         inventory = db.query(Inventory).filter(
             Inventory.product_id == existing.id,
             Inventory.shop_id == current_shop.id
         ).first()
 
-        if inventory:
-            inventory.is_active = True
+        # 🔥 VALIDATION
+        if data.track_inventory and data.initial_stock and not data.cost_price:
+            raise HTTPException(400, "Cost price required")
 
-            # 🔥 ADD STOCK IF PROVIDED
-            if data.initial_stock and data.initial_stock > 0:
-                inventory.current_stock += data.initial_stock
+        # ================= INVENTORY LOGIC =================
+        if data.track_inventory:
 
-            db.commit()
+            if inventory:
+                inventory.is_active = True
 
-        else:
-            # 🔥 CREATE NEW INVENTORY IF MISSING
-            if data.initial_stock and data.initial_stock > 0:
+                # if data.initial_stock and data.initial_stock > 0:
+
+                #     old_stocak = inventory.current_stock
+                #     old_avg = inventory.average_cost
+
+                #     new_stock = old_stock + data.initial_stock
+
+                #     new_avg = (
+                #         ((old_stock * old_avg) + (data.initial_stock * (data.cost_price or old_avg)))
+                #         / new_stock
+                #     )
+
+                #     inventory.current_stock = new_stock
+                #     inventory.average_cost = new_avg
+
+            else:
                 new_inventory = Inventory(
                     product_id=existing.id,
                     shop_id=current_shop.id,
@@ -103,7 +168,18 @@ def add_to_shop(
                     is_active=True
                 )
                 db.add(new_inventory)
-                db.commit()
+
+        else:
+            # 🔥 TURN OFF INVENTORY
+            if inventory:
+                inventory.is_active = False
+
+        db.commit()
+
+        return {
+            "message": "Product restored",
+            "product_id": existing.id
+        }
 
     # =========================================================
     # 🆕 NEW PRODUCT
@@ -123,8 +199,9 @@ def add_to_shop(
 
     return {
         "message": "Product added successfully",
-        "product_id": new_product.id  # 🔥 VERY IMPORTANT
+        "product_id": new_product.id
     }
+
 
 # ================= GET MY PRODUCTS =================
 @router.get("/my-products")
@@ -132,7 +209,6 @@ def get_my_products(
     db: Session = Depends(get_db),
     current_shop: Shop = Depends(get_current_shop)
 ):
-
     results = db.query(
         ShopProduct.id,
         ShopProduct.price,
@@ -151,72 +227,39 @@ def get_my_products(
         {
             "id": r.id,
             "name": r.name,
-            "variant": r.variant_name,   # ✅ match Android model
+            "variant": r.variant_name,
             "unit": r.unit,
             "price": r.price
         }
         for r in results
     ]
 
-# ================= VERIFY PRODUCT =================
-@router.put("/verify-product/{product_id}")
-def verify_product(product_id: int, db: Session = Depends(get_db)):
 
-    product = db.query(GlobalProduct).filter(
-        GlobalProduct.id == product_id
-    ).first()
-
-    if not product:
-        raise HTTPException(status_code=404, detail="Product not found")
-
-    product.is_verified = True
-    db.commit()
-
-    return {"message": "Product verified successfully"}
-
-# ================= DEACTIVATE PRODUCT =================
+# ================= DEACTIVATE =================
 @router.put("/deactivate/{product_id}")
-
 def deactivate_product(
-
     product_id: int,
-
     db: Session = Depends(get_db),
-
     current_shop: Shop = Depends(get_current_shop)
-
 ):
-
     product = db.query(ShopProduct).filter(
-
         ShopProduct.id == product_id,
-
         ShopProduct.shop_id == current_shop.id
-
     ).first()
 
     if not product:
-
-        raise HTTPException(status_code=404, detail="Product not found")
-
-    # 🔥 deactivate product
+        raise HTTPException(404, "Product not found")
 
     product.is_active = False
 
-    # 🔥 ALSO deactivate inventory
-
     inventory = db.query(Inventory).filter(
-
         Inventory.product_id == product_id,
-
         Inventory.shop_id == current_shop.id
-
     ).first()
 
     if inventory:
-
         inventory.is_active = False
 
     db.commit()
 
-    return {"message": "Product deactivated"} 
+    return {"message": "Product deactivated"}
