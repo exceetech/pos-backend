@@ -4,7 +4,7 @@ from app.database import engine, Base
 
 from app.models import *
 
-from app.routes import auth_routes
+from app.routes import auth_routes, profit_routes, sales_routes
 from app.routes import product_routes
 from app.routes import bill_routes
 from app.routes import report_routes
@@ -55,6 +55,8 @@ app.include_router(analytics_router)
 app.include_router(subscription.router)
 app.include_router(credit.router)
 app.include_router(inventory_routes.router)
+app.include_router(sales_routes.router)
+app.include_router(profit_routes.router)
 
 # Root
 @app.get("/")
