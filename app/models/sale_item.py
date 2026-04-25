@@ -22,4 +22,4 @@ class SaleItem(Base):
     total_revenue = Column(Float, nullable=False)
     total_cost = Column(Float, nullable=False)
 
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=datetime.now)
