@@ -20,7 +20,8 @@ def get_store_settings(
         "shop_name": current_shop.shop_name,
         "store_address": current_shop.store_address,
         "phone": current_shop.phone,
-        "store_gstin": current_shop.store_gstin
+        "store_gstin": current_shop.store_gstin,
+        "type": current_shop.type
     }
 
 
@@ -37,6 +38,8 @@ def update_store_settings(
     current_shop.store_address = data.store_address
     current_shop.phone = data.phone
     current_shop.store_gstin = data.store_gstin
+
+    current_shop.type = data.type
 
     db.commit()
     db.refresh(current_shop)

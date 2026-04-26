@@ -21,6 +21,18 @@ from app.util.report_generator import generate_report_pdf
 from app.models.shop_products import ShopProduct
 from app.models.global_products import GlobalProduct
 
+SHOP_WEIGHTS = {
+
+    "grocery":  {"qty": 0.1, "rev": 0.7, "freq": 0.2},
+
+    "hotel":    {"qty": 0.2, "rev": 0.3, "freq": 0.5},
+
+    "bakery":   {"qty": 0.3, "rev": 0.4, "freq": 0.3},
+
+    "general":  {"qty": 0.2, "rev": 0.5, "freq": 0.3}
+
+}
+
 router = APIRouter(prefix="/reports", tags=["Reports"])
 
 
@@ -113,6 +125,7 @@ def yearly_report(db: Session = Depends(get_db), current_shop=Depends(get_curren
 @router.get("/top-products")
 def top_products(
     type: str = "today",
+    sort_by: str = "quantity",
     start: str = None,
     end: str = None,
     db: Session = Depends(get_db),
@@ -120,10 +133,12 @@ def top_products(
 ):
 
     query = db.query(
-    BillItem.product_name,
-    BillItem.variant,  # 🔥 ADD THIS
-    func.sum(BillItem.quantity),
-    func.sum(BillItem.subtotal)
+        BillItem.product_name,
+        BillItem.variant,
+        BillItem.unit,
+        func.sum(BillItem.quantity).label("qty"),
+        func.sum(BillItem.subtotal).label("revenue"),
+        func.count(BillItem.id).label("frequency")
     ).join(Bill).filter(
     Bill.shop_id == current_shop.id,
     Bill.active == True
@@ -148,21 +163,87 @@ def top_products(
             print("Date parse error:", e)
 
     rows = query.group_by(
-    BillItem.product_name,
-    BillItem.variant   # 🔥 MUST ADD
-    ).order_by(
-    func.sum(BillItem.quantity).desc()
-    ).limit(10).all()
+        BillItem.product_name,
+        BillItem.variant,
+        BillItem.unit
+    ).limit(100).all()
+
+    data = [
+
+        {
+
+            "product": r[0],
+
+            "variant": r[1],
+            "unit": r[2] or "",
+
+            "quantity": float(r[3] or 0),
+
+            "revenue": float(r[4] or 0),
+            "frequency": float(r[5] or 0)
+
+        }
+
+        for r in rows
+
+    ]
+
+    if sort_by == "quantity":
+
+        data.sort(key=lambda x: x["quantity"], reverse=True)
+
+    elif sort_by == "revenue":
+
+        data.sort(key=lambda x: x["revenue"], reverse=True)
+
+    elif sort_by == "frequency":
+
+        data.sort(key=lambda x: x["frequency"], reverse=True)
+
+    elif sort_by == "smart":
+
+        max_qty = max((x["quantity"] for x in data), default=1)
+        max_rev = max((x["revenue"] for x in data), default=1)
+        max_freq = max((x["frequency"] for x in data), default=1)
+
+        shop_type = (current_shop.type or "general").lower()
+
+        weights = SHOP_WEIGHTS.get(shop_type, SHOP_WEIGHTS["general"])
+
+        w_qty = weights["qty"]
+        w_rev = weights["rev"]
+        w_freq = weights["freq"]
+
+        total = w_qty + w_rev + w_freq
+        if total != 1:
+            w_qty /= total
+            w_rev /= total
+            w_freq /= total
+
+        for x in data:
+            norm_qty = x["quantity"] / max_qty if max_qty else 0
+            norm_rev = x["revenue"] / max_rev if max_rev else 0
+            norm_freq = x["frequency"] / max_freq if max_freq else 0
+
+            x["score"] = (
+                w_qty * norm_qty +
+                w_rev * norm_rev +
+                w_freq * norm_freq
+            )
+
+        data.sort(key=lambda x: x["score"], reverse=True)
 
     return [
     {
-        "product": r[0],
-        "variant": r[1],   # 🔥 ADD THIS
-        "quantity": int(r[2] or 0),
-        "revenue": float(r[3] or 0)
+        "product": x["product"],
+        "variant": x["variant"],
+        "unit": x["unit"],
+        "quantity": int(x["quantity"]),
+        "revenue": float(x["revenue"]),
+        "frequency": int(x["frequency"])
     }
-    for r in rows
-    ]
+    for x in data[:50]
+]
 
 
 # ================= PEAK HOURS =================
@@ -647,26 +728,32 @@ def get_top_products(db, current_shop, start, end):
 
     rows = db.query(
         BillItem.product_name,
+        BillItem.variant,
+        BillItem.unit,
         func.sum(BillItem.quantity),
         func.sum(BillItem.subtotal),
-        func.count(Bill.id)
+        func.count(BillItem.id)
     ).join(Bill).filter(
         Bill.shop_id == current_shop.id,
         Bill.active == True,
         Bill.created_at >= start,
         Bill.created_at <= end
     ).group_by(
-        BillItem.product_name
+        BillItem.product_name,
+        BillItem.variant,
+        BillItem.unit
     ).order_by(
-        func.sum(BillItem.quantity).desc()
+        func.sum(BillItem.subtotal).desc()
     ).limit(10).all()
 
     return [
         {
             "product": r[0],
-            "quantity": int(r[1] or 0),
-            "revenue": float(r[2] or 0),
-            "bills": int(r[3] or 0)
+            "variant": r[1],
+            "unit": r[2] or "",
+            "quantity": float(r[3] or 0),
+            "revenue": float(r[4] or 0),
+            "frequency": int(r[5] or 0)
         }
         for r in rows
     ]

@@ -32,3 +32,5 @@ class Shop(Base):
     reset_otp_hash = Column(String, nullable=True)
     reset_otp_expiry = Column(DateTime, nullable=True)
     reset_otp_attempts = Column(Integer, default=0)
+
+    type = Column(String, default="general", nullable=False)

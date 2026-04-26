@@ -20,6 +20,7 @@ class ShopSettingsResponse(BaseModel):
     store_address: str | None
     phone: str | None
     store_gstin: str | None
+    type: str | None = "general"
 
 
 class ShopSettingsUpdate(BaseModel):
@@ -27,6 +28,7 @@ class ShopSettingsUpdate(BaseModel):
     store_address: str | None
     phone: str | None
     store_gstin: str | None
+    type: str | None = "general"
 
 class ForgotPasswordRequest(BaseModel):
     email: EmailStr
