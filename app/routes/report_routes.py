@@ -51,7 +51,7 @@ def daily_report(db: Session = Depends(get_db), current_shop=Depends(get_current
     ).group_by(
         func.date(Bill.created_at)
     ).order_by(
-        func.date(Bill.created_at)
+        func.date(Bill.created_at).desc()
     ).all()
 
     return [
@@ -79,7 +79,7 @@ def monthly_report(db: Session = Depends(get_db), current_shop=Depends(get_curre
     ).group_by(
         func.date_trunc("month", Bill.created_at)
     ).order_by(
-        func.date_trunc("month", Bill.created_at)
+        func.date_trunc("month", Bill.created_at).desc()
     ).all()
 
     return [
@@ -107,7 +107,7 @@ def yearly_report(db: Session = Depends(get_db), current_shop=Depends(get_curren
     ).group_by(
         func.extract("year", Bill.created_at)
     ).order_by(
-        func.extract("year", Bill.created_at)
+        func.extract("year", Bill.created_at).desc()
     ).all()
 
     return [
@@ -144,12 +144,10 @@ def top_products(
     Bill.active == True
 )
 
-    # ✅ TODAY FILTER
     if type == "today":
         today = date.today()
         query = query.filter(func.date(Bill.created_at) == today)
 
-    # ✅ CUSTOM (USED FOR WEEK / MONTH / YEAR ALSO)
     elif type == "custom" and start and end:
         try:
             start_date = datetime.strptime(start, "%Y-%m-%d").date()
