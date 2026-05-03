@@ -1,0 +1,193 @@
+from reportlab.lib.pagesizes import A4
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.lib.units import cm
+from reportlab.lib import colors
+from datetime import datetime
+
+from reportlab.pdfbase import pdfmetrics
+from reportlab.pdfbase.ttfonts import TTFont
+
+
+pdfmetrics.registerFont(
+    TTFont("DejaVu", "app/util/fonts/DejaVuSans.ttf")
+)
+
+TOTAL_WIDTH = 16 * cm
+
+
+# ================= TABLE =================
+def corporate_table(data):
+
+    col_count = len(data[0])
+    col_width = TOTAL_WIDTH / col_count
+    col_widths = [col_width] * col_count
+
+    table = Table(data, colWidths=col_widths)
+
+    table.setStyle(TableStyle([
+        ("GRID", (0,0), (-1,-1), 0.3, colors.grey),
+
+        ("BACKGROUND", (0,0), (-1,0), colors.HexColor("#2E3B4E")),
+        ("TEXTCOLOR", (0,0), (-1,0), colors.white),
+
+        ("FONTNAME", (0,0), (-1,-1), "DejaVu"),
+
+        ("ALIGN", (0,0), (0,-1), "LEFT"),
+        ("ALIGN", (1,1), (-1,-1), "RIGHT"),
+        ("ALIGN", (0,0), (-1,0), "CENTER"),
+
+        ("TOPPADDING", (0,0), (-1,-1), 6),
+        ("BOTTOMPADDING", (0,0), (-1,-1), 6),
+    ]))
+
+    return table
+
+
+# ================= MAIN =================
+def generate_report_pdf(file_path, summary, daily, monthly, products, peak, report_type="today", shop=None):
+
+    styles = getSampleStyleSheet()
+
+    # ================= CURRENCY =================
+    currency_symbol = "₹"
+
+    if shop and shop.get("currency"):
+        cur = shop.get("currency")
+        if "$" in cur:
+            currency_symbol = "$"
+        elif "€" in cur:
+            currency_symbol = "€"
+
+    # ================= STYLES =================
+    date_style = ParagraphStyle(
+        "DateStyle",
+        parent=styles["Normal"],
+        alignment=0,
+        fontSize=11,
+        textColor=colors.black,
+        spaceAfter=10,
+        fontName="DejaVu"
+    )
+
+    title = ParagraphStyle(
+        "Title",
+        parent=styles["Title"],
+        alignment=1,
+        fontSize=24,
+        textColor=colors.HexColor("#2E3B4E"),
+        fontName="DejaVu"
+    )
+
+    section = ParagraphStyle(
+        "Section",
+        parent=styles["Heading2"],
+        fontSize=14,
+        textColor=colors.HexColor("#1F6F8B"),
+        spaceAfter=10,
+        fontName="DejaVu"
+    )
+
+    paragraph = ParagraphStyle(
+        "Paragraph",
+        parent=styles["Normal"],
+        fontSize=11,
+        leading=16,
+        fontName="DejaVu"
+    )
+
+    elements = []
+
+    # ================= HEADER =================
+    elements.append(Paragraph("ExPOS Analytics Report", title))
+    elements.append(Spacer(1, 10))
+
+    elements.append(Paragraph(
+        f"<b>Date:</b> {datetime.now().strftime('%B %d, %Y')}",
+        date_style
+    ))
+
+    elements.append(Spacer(1, 5))
+
+    # ================= CURRENCY HEADER =================
+    elements.append(Paragraph(f"Currency: {currency_symbol}", paragraph))
+    elements.append(Spacer(1, 15))
+
+    # ================= KPI =================
+    kpi_data = [
+        [f"Revenue ({currency_symbol})", "Bills", f"Avg Bill ({currency_symbol})"],
+        [
+            f"{summary['revenue']:.2f}",
+            summary["bills"],
+            f"{summary['average']:.2f}"
+        ]
+    ]
+
+    elements.append(corporate_table(kpi_data))
+    elements.append(Spacer(1, 25))
+
+    # ================= DAILY =================
+    elements.append(Paragraph("Daily Sales", section))
+
+    data = [["Date", f"Revenue ({currency_symbol})", "Bills"]]
+    for d in daily:
+        data.append([d["date"], f"{d['revenue']:.2f}", d["bills"]])
+
+    elements.append(corporate_table(data))
+    elements.append(Spacer(1, 20))
+
+    # ================= MONTHLY =================
+    elements.append(Paragraph("Monthly Sales", section))
+
+    data = [["Month", f"Revenue ({currency_symbol})", "Bills"]]
+    for m in monthly:
+        data.append([m["month"], f"{m['revenue']:.2f}", m["bills"]])
+
+    elements.append(corporate_table(data))
+    elements.append(Spacer(1, 20))
+
+    # ================= PRODUCTS =================
+    elements.append(Paragraph("Top Products", section))
+
+    data = [["Product", "Quantity", f"Revenue ({currency_symbol})"]]
+    for p in products:
+        data.append([p["product"], p["quantity"], f"{p['revenue']:.2f}"])
+
+    elements.append(corporate_table(data))
+    elements.append(Spacer(1, 20))
+
+    # ================= PEAK =================
+    elements.append(Paragraph("Peak Hours", section))
+
+    data = [["Hour", "Bills", f"Revenue ({currency_symbol})"]]
+    for p in peak:
+        data.append([f"{p['hour']}:00", p["bills"], f"{p['revenue']:.2f}"])
+
+    elements.append(corporate_table(data))
+    elements.append(Spacer(1, 30))
+
+    # ================= FOOTER =================
+    elements.append(Paragraph(
+        "Generated by ExPOS Analytics",
+        ParagraphStyle(
+            "Footer",
+            alignment=1,
+            fontSize=9,
+            textColor=colors.grey,
+            fontName="DejaVu"
+        )
+    ))
+
+    # ================= BUILD =================
+    pdf = SimpleDocTemplate(
+        file_path,
+        pagesize=A4,
+        leftMargin=2.5*cm,
+        rightMargin=2.5*cm,
+        topMargin=2.5*cm,
+        bottomMargin=2.5*cm
+    )
+
+    pdf.build(elements)
+
+    return file_path
