@@ -1,4 +1,3 @@
 app/.env
 app/firebase-key.json
-app/__pycache__/
 *.pyc
