@@ -8,4 +8,5 @@ class CreditAccountCreate(BaseModel):
 class CreditTransactionCreate(BaseModel):
     account_id: int
     amount: float
-    type: str  # ADD / PAY / SETTLE
+    type: str  # ADD / PAY / SETTLE / PURCHASE_CREDIT / PURCHASE_RETURN
+    reference_invoice: str = None

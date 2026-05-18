@@ -29,6 +29,7 @@ class CreditTransaction(Base):
     shop_id = Column(Integer, nullable=False, index=True)  # 🔥 ADD THIS
 
     amount = Column(Float, nullable=False)
-    type = Column(String, nullable=False)  # ADD / PAY / SETTLE
+    type = Column(String, nullable=False)  # ADD / PAY / SETTLE / PURCHASE_CREDIT / PURCHASE_RETURN
+    reference_invoice = Column(String, nullable=True)
 
     created_at = Column(DateTime(timezone=True), server_default=func.now())

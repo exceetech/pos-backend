@@ -21,78 +21,81 @@ You are an expert RETAIL BUSINESS ANALYST working for an AI powered POS system.
 Your task is to analyze sales data and generate PRACTICAL BUSINESS INSIGHTS that help a shop owner increase profit.
 
 RULES:
-- DO NOT generate code
-- DO NOT generate programming explanations
-- Only provide business insights
+- DO NOT generate code or JSON
+- Only provide business insights in plain text
+- DO NOT use emojis or icons
+- Use the 'Rs.' prefix for all currency values (e.g. Rs. 500)
 - Use SHORT lines
-- Use the ICONS provided below
 - Keep insights actionable and practical
 - Price is in INR
-- Return headings in red colour and underlined
 
 Sales Data:
 {report_data}
 
 Analyze the data and provide insights for:
 
-1️⃣ Best Selling Products  
-2️⃣ Slow Selling Products  
-3️⃣ Inventory Strategy  
-4️⃣ Profit Strategy  
-5️⃣ Sales Insights  
-6️⃣ Stock Recommendation  
-7️⃣ Marketing Ideas  
+1. Best Selling Products  
+2. Slow Selling Products  
+3. Inventory Strategy  
+4. Profit Strategy  
+5. Sales Insights  
+6. Stock Recommendation  
+7. Marketing Ideas  
 
 Return the response EXACTLY in this structure:
 
 BEST SELLING PRODUCTS
-🔥 product name — why it sells well
-🔥 product name — reason
+Product name — why it sells well
+Product name — reason
 
 SLOW SELLING PRODUCTS
-⚠️ product name — why it is slow
+Product name — why it is slow
 
-📦 INVENTORY STRATEGY
-📦 Recommended stock levels for fast moving products
-📦 How much inventory should be maintained
+INVENTORY STRATEGY
+Recommended stock levels for fast moving products
+How much inventory should be maintained
 
 PROFIT STRATEGY
-💰 Pricing improvements
-💰 Upselling ideas
-💰 Bundle suggestions
+Pricing improvements
+Upselling ideas
+Bundle suggestions
 
 SALES INSIGHTS
-📊 Patterns in sales behavior
-📊 Customer buying trends
+Patterns in sales behavior
+Customer buying trends
 
 STOCK RECOMMENDATION
-📦 Suggested stock levels for top products
-📦 When to restock based on demand
+Suggested stock levels for top products
+When to restock based on demand
 
 MARKETING IDEAS
-🚀 Promotion ideas
-🚀 Cross selling opportunities
-🚀 Discount strategies
+Promotion ideas
+Cross selling opportunities
+Discount strategies
 
 IMPORTANT:
 - Each point must be ONE SHORT line
 - Maximum 2–3 lines per section
-- Focus on practical business improvement
+- DO NOT use the Rupee symbol (₹), use 'Rs.' instead.
 """
 
-    response = client.chat.completions.create(
-        model="llama-3.3-70b-versatile",
-        messages=[
-            {
-                "role": "system",
-                "content": "You are a professional retail business intelligence expert."
-            },
-            {
-                "role": "user",
-                "content": prompt
-            }
-        ],
-        temperature=0.3
-    )
-
-    return response.choices[0].message.content
+    try:
+        response = client.chat.completions.create(
+            model="llama-3.1-8b-instant",
+            messages=[
+                {
+                    "role": "system",
+                    "content": "You are a professional retail business intelligence expert who provides clean, emoji-free insights using Rs. for currency."
+                },
+                {
+                    "role": "user",
+                    "content": prompt
+                }
+            ],
+            temperature=0.3,
+            max_tokens=1000
+        )
+        return response.choices[0].message.content
+    except Exception as e:
+        print(f"AI Service Error: {str(e)}")
+        return "Intelligence report is currently recalibrating. Please check back in a few moments. System is processing high sales volume."

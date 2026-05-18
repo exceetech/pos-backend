@@ -7,5 +7,5 @@ class GlobalProduct(Base):
     id = Column(Integer, primary_key=True, index=True)
     name = Column(String, unique=True, nullable=False)
 
-    is_verified = Column(Boolean, default=True)   # Admin approved
+    is_verified = Column(Boolean, default=True)
     created_by_shop_id = Column(Integer, nullable=True)

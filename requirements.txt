@@ -12,10 +12,11 @@ python-jose[cryptography]
 reportlab
 matplotlib
 fastapi-mail
-reportlab
 firebase-admin
 ollama
 groq
 apscheduler
 gunicorn
 postgresql
+alembic
+httpx

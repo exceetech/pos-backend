@@ -7,7 +7,12 @@ from app.database import get_db
 from app.models.shop import Shop
 from app.models.global_products import GlobalProduct
 from app.models.shop_products import ShopProduct
-from app.schemas.product_schema import AddProductRequest
+from app.schemas.product_schema import (
+    AddProductRequest, HsnVerificationResponse, 
+    VariantListResponse, ProductNameVerifyResponse
+)
+from app.models.global_hsn import GlobalHSN
+from app.models.global_product_variant import GlobalProductVariant
 from app.dependencies import get_current_shop
 from app.utils import normalize_name
 
@@ -182,7 +187,7 @@ def add_to_shop(
         }
 
     # =========================================================
-    # 🆕 NEW PRODUCT
+    # NEW PRODUCT
     # =========================================================
     new_product = ShopProduct(
         shop_id=current_shop.id,
@@ -190,7 +195,9 @@ def add_to_shop(
         variant_name=variant,
         unit=unit,
         price=data.price,
-        is_active=True
+        is_active=True,
+        hsn_code=data.hsn_code or None,
+        default_gst_rate=data.default_gst_rate or 0.0
     )
 
     db.add(new_product)
@@ -214,6 +221,8 @@ def get_my_products(
         ShopProduct.price,
         ShopProduct.variant_name,
         ShopProduct.unit,
+        ShopProduct.hsn_code,
+        ShopProduct.default_gst_rate,
         GlobalProduct.name
     ).join(
         GlobalProduct,
@@ -229,10 +238,28 @@ def get_my_products(
             "name": r.name,
             "variant": r.variant_name,
             "unit": r.unit,
-            "price": r.price
+            "price": r.price,
+            "hsn_code": r.hsn_code or "",
+            "default_gst_rate": r.default_gst_rate or 0.0
         }
         for r in results
     ]
+
+# ================= VERIFY PRODUCT (ADMIN ONLY LATER) =================
+@router.put("/verify-product/{product_id}")
+def verify_product(product_id: int, db: Session = Depends(get_db)):
+
+    product = db.query(GlobalProduct)\
+        .filter(GlobalProduct.id == product_id)\
+        .first()
+
+    if not product:
+        raise HTTPException(status_code=404, detail="Product not found")
+
+    product.is_verified = True
+    db.commit()
+
+    return {"message": "Product verified successfully"}
 
 
 # ================= DEACTIVATE =================
@@ -263,3 +290,60 @@ def deactivate_product(
     db.commit()
 
     return {"message": "Product deactivated"}
+
+
+# ================= VERIFICATION (FOR ANDROID) =================
+
+@router.get("/verify-hsn/{hsn}", response_model=HsnVerificationResponse)
+def verify_hsn(hsn: str, db: Session = Depends(get_db)):
+    # Check global registry
+    global_hsn = db.query(GlobalHSN).filter(GlobalHSN.hsn_code == hsn).first()
+    
+    if global_hsn and global_hsn.is_verified:
+        return {
+            "valid": True,
+            "hsn": hsn,
+            "description": "HSN Code Verified"
+        }
+    
+    return {
+        "valid": False,
+        "hsn": hsn,
+        "message": "HSN not found in global registry"
+    }
+
+@router.get("/verify-name", response_model=ProductNameVerifyResponse)
+def verify_product_name(name: str, db: Session = Depends(get_db)):
+    normalized = normalize_name(name)
+    global_p = db.query(GlobalProduct).filter(GlobalProduct.name == normalized).first()
+    
+    if global_p and global_p.is_verified:
+        return {
+            "valid": True,
+            "name": name,
+            "matched_global_id": global_p.id
+        }
+    
+    return {
+        "valid": False,
+        "name": name,
+        "message": "Product name not verified"
+    }
+
+@router.get("/{product_name}/variants", response_model=VariantListResponse)
+def get_product_variants_by_name(product_name: str, db: Session = Depends(get_db)):
+    normalized = normalize_name(product_name)
+    global_p = db.query(GlobalProduct).filter(GlobalProduct.name == normalized).first()
+    
+    if not global_p:
+        return {"product_name": product_name, "variants": []}
+        
+    variants = db.query(GlobalProductVariant).filter(
+        GlobalProductVariant.product_id == global_p.id,
+        GlobalProductVariant.is_verified == True
+    ).all()
+    
+    return {
+        "product_name": product_name,
+        "variants": [v.variant_name for v in variants]
+    }

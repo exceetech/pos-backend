@@ -114,10 +114,17 @@ def sync_credit(
     if not account:
         raise HTTPException(status_code=404, detail="Account not found")
 
-    if data.type == "ADD":
+    if data.type == "ADD" or data.type == "PURCHASE_CREDIT":
         account.due_amount += data.amount
-    elif data.type == "PAY":
-        account.due_amount -= data.amount
+    elif data.type == "PAY" or data.type == "PURCHASE_RETURN":
+        # amount for PURCHASE_RETURN might be negative already from client, 
+        # but let's be safe and check logic.
+        # In my Android repo, I sent -invoiceValue for RETURN. 
+        # So ADDING a negative value correctly reduces debt.
+        # However, the backend logic for PAY was account.due_amount -= data.amount.
+        # If I send negative amount and use -=, it would ADD debt.
+        # Let's align on: backend always DOES the math based on type.
+        account.due_amount += data.amount 
     elif data.type == "SETTLE":
         account.due_amount = 0
     else:
@@ -127,7 +134,8 @@ def sync_credit(
         account_id=data.account_id,
         shop_id=shop_id,
         amount=data.amount,
-        type=data.type
+        type=data.type,
+        reference_invoice=data.reference_invoice
     )
 
     db.add(txn)

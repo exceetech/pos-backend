@@ -1,0 +1,120 @@
+"""
+GST-aware sales invoice (header + items).
+
+Mirrors the Android pair `gst_sales_invoice_table` /
+`gst_sales_items_table`. Sits *alongside* the existing
+`bills` / `bill_items` tables (which are still the
+canonical source of truth for bill history, reports and
+inventory ops). The structures here exist so:
+
+  • The mobile client can persist GST-aware metadata
+    (B2B/B2C, scheme, customer GSTIN, per-line tax split)
+    that has no clean home on the legacy schema.
+
+  • GST reports / accountant exports can read from a
+    flat schema that already carries everything the
+    GSTR-1 / HSN summary path needs without joining
+    five tables every time.
+
+The relation back to the legacy bill is via `bill_id`,
+which is *not* a hard FK — the offline-first client
+generates rows before the bill exists on the server, and
+we don't want batch sync to fail on missing parents.
+"""
+from sqlalchemy import Column, Integer, Float, String, ForeignKey, DateTime, Index
+from sqlalchemy.orm import relationship
+from datetime import datetime
+
+from app.database import Base
+
+
+class GstSalesInvoice(Base):
+    __tablename__ = "gst_sales_invoice"
+
+    id = Column(Integer, primary_key=True, index=True)
+
+    shop_id = Column(Integer, ForeignKey("shops.id"), nullable=False, index=True)
+
+    # Soft pointer back to the legacy `bills` row. Not a FK on
+    # purpose — the mobile client generates this before a bill
+    # exists on the server, and we don't want sync to die on a
+    # missing parent.
+    bill_id = Column(Integer, nullable=True, index=True)
+
+    # Echo of the client-side row id — lets the offline replay
+    # path produce an idempotent {local_id → server_id} map.
+    local_id = Column(Integer, nullable=True, index=True)
+
+    invoice_type = Column(String, nullable=False, default="B2C")        # B2B / B2C
+    gst_scheme = Column(String, nullable=False, default="")             # Composition Scheme / Normal GST Scheme
+
+    customer_name = Column(String, nullable=True)
+    business_name = Column(String, nullable=True)
+    customer_phone = Column(String, nullable=True)
+    customer_gst = Column(String, nullable=True)
+    customer_state = Column(String, nullable=True)
+
+    subtotal = Column(Float, nullable=False, default=0.0)
+    total_cgst = Column(Float, nullable=False, default=0.0)
+    total_sgst = Column(Float, nullable=False, default=0.0)
+    total_igst = Column(Float, nullable=False, default=0.0)
+    total_tax = Column(Float, nullable=False, default=0.0)
+    grand_total = Column(Float, nullable=False, default=0.0)
+
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+    # Cascade deletes — deleting an invoice removes its lines.
+    items = relationship(
+        "GstSalesInvoiceItem",
+        back_populates="invoice",
+        cascade="all, delete-orphan",
+    )
+
+
+class GstSalesInvoiceItem(Base):
+    __tablename__ = "gst_sales_invoice_items"
+
+    id = Column(Integer, primary_key=True, index=True)
+
+    gst_invoice_id = Column(
+        Integer,
+        ForeignKey("gst_sales_invoice.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+
+    product_id = Column(Integer, nullable=False, index=True)
+    product_name = Column(String, nullable=False)
+    variant_name = Column(String, nullable=True)
+    hsn_code = Column(String, nullable=False, default="")
+
+    quantity = Column(Float, nullable=False)
+    selling_price = Column(Float, nullable=False)
+    taxable_amount = Column(Float, nullable=False)
+
+    sales_cgst_percentage = Column(Float, nullable=False, default=0.0)
+    sales_sgst_percentage = Column(Float, nullable=False, default=0.0)
+    sales_igst_percentage = Column(Float, nullable=False, default=0.0)
+
+    cgst_amount = Column(Float, nullable=False, default=0.0)
+    sgst_amount = Column(Float, nullable=False, default=0.0)
+    igst_amount = Column(Float, nullable=False, default=0.0)
+
+    net_value = Column(Float, nullable=False, default=0.0)
+
+    invoice = relationship("GstSalesInvoice", back_populates="items")
+
+
+# Composite indices that the report code is most likely to use —
+# (shop, created_at) for "show me the last 30 days of invoices",
+# (shop, customer_gst) for B2B customer drill-downs.
+Index(
+    "ix_gst_sales_invoice_shop_created",
+    GstSalesInvoice.shop_id,
+    GstSalesInvoice.created_at,
+)
+Index(
+    "ix_gst_sales_invoice_shop_customer_gst",
+    GstSalesInvoice.shop_id,
+    GstSalesInvoice.customer_gst,
+)

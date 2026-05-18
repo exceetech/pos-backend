@@ -9,7 +9,11 @@ class ShopProduct(Base):
     global_product_id = Column(Integer, ForeignKey("global_products.id"), nullable=False)
 
     variant_name = Column(String, nullable=True)
-    unit = Column(String, default="unit") 
+    unit = Column(String, default="unit")
 
     price = Column(Float, nullable=False)
     is_active = Column(Boolean, default=True)
+
+    # GST fields
+    hsn_code = Column(String, nullable=True)
+    default_gst_rate = Column(Float, default=0.0)

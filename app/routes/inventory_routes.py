@@ -19,8 +19,10 @@ def sync_inventory_logs(
     db: Session = Depends(get_db),
     current_shop = Depends(get_current_shop)
 ):
+    print(f"[inventory/sync] shop_id={current_shop.id}, received {len(logs)} log(s)")
 
     for log in logs:
+        print(f"  → product_id={log.product_id}, type={log.type}, qty={log.quantity}, price={log.price}, date={log.date}")
 
         # =================================================
         # 🔥 FK SAFETY CHECK (CRITICAL FIX)
@@ -32,17 +34,26 @@ def sync_inventory_logs(
 
         if not product:
             # skip invalid product instead of crashing
+            print(f"  ⚠️  Skipping log for non-existent product_id={log.product_id}")
             continue
 
         # =================================================
         # 🔥 DEDUP CHECK (DATABASE LEVEL)
         # =================================================
+        # We now check created_at to allow multiple identical transactions 
+        # at different times (e.g. adding 10 units twice in a day).
+        if log.date:
+            log_date = datetime.utcfromtimestamp(log.date / 1000.0)
+        else:
+            log_date = datetime.utcnow()
+
         existing_log = db.query(InventoryLog).filter(
             InventoryLog.shop_id == current_shop.id,
             InventoryLog.product_id == log.product_id,
             InventoryLog.type == log.type,
             InventoryLog.quantity == log.quantity,
-            InventoryLog.price == log.price
+            InventoryLog.price == log.price,
+            InventoryLog.created_at == log_date
         ).first()
 
         if existing_log:
@@ -52,19 +63,12 @@ def sync_inventory_logs(
         # 🔥 SAVE LOG
         # =================================================
         db_log = InventoryLog(
-
             shop_id=current_shop.id,
-
             product_id=log.product_id,
-
             type=log.type,
-
             quantity=log.quantity,
-
             price=log.price,
-
-            created_at=log.date or datetime.utcnow()
-
+            created_at=log_date
         )
         db.add(db_log)
 
@@ -85,6 +89,7 @@ def sync_inventory_logs(
                 is_active=True
             )
             db.add(inventory)
+            db.flush() # 🔥 ensure subsequent logs in the same loop find this row
 
         # =================================================
         # 🔥 APPLY LOGIC
@@ -105,13 +110,12 @@ def sync_inventory_logs(
             inventory.current_stock = new_stock
             inventory.average_cost = new_avg
 
-        elif log.type in ["SALE", "LOSS", "ADJUST"]:
-
-            # 🔥 PREVENT NEGATIVE STOCK
-            inventory.current_stock = max(
-                0,
-                inventory.current_stock - log.quantity
-            )
+        elif log.type in ["SALE", "LOSS", "ADJUST", "RETURN"]:
+            # 🔥 PREVENT NEGATIVE STOCK & RESET COST IF 0
+            new_stock = max(0.0, float(inventory.current_stock or 0) - log.quantity)
+            inventory.current_stock = new_stock
+            if new_stock <= 0:
+                inventory.average_cost = 0.0
 
     db.commit()
 

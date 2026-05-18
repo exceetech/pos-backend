@@ -11,6 +11,10 @@ class AddProductRequest(BaseModel):
     initial_stock: Optional[float] = 0
     cost_price: Optional[float] = 0
 
+    # GST fields (mandatory when GST is enabled)
+    hsn_code: Optional[str] = None
+    default_gst_rate: Optional[float] = 0.0
+
 class ProductResponse(BaseModel):
     id: int
     name: str
@@ -18,3 +22,22 @@ class ProductResponse(BaseModel):
 
     class Config:
         from_attributes = True
+
+class HsnVerificationResponse(BaseModel):
+    valid: bool
+    hsn: str
+    description: Optional[str] = None
+    message: Optional[str] = None
+
+class VariantListResponse(BaseModel):
+    product_name: str
+    variants: list[str] = []
+
+class ProductNameVerifyResponse(BaseModel):
+    valid: bool
+    name: str
+    matched_global_id: Optional[int] = None
+    message: Optional[str] = None
+
+class UnitListResponse(BaseModel):
+    units: list[str] = []
