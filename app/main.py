@@ -118,6 +118,86 @@ except Exception as e:  # pragma: no cover
     print(f"[startup] credit-columns migration skipped: {e}")
 
 
+# ──────────────────────────────────────────────────────────────────────
+# In-place migration: add columns introduced after the original tables
+# already existed. SQLAlchemy create_all() never ALTERs existing tables,
+# so deployed/local Postgres databases otherwise crash with
+# UndefinedColumn as soon as the ORM model selects the new fields.
+# ──────────────────────────────────────────────────────────────────────
+def _add_column_if_missing(conn, table_name: str, existing: set[str], column_name: str, ddl: str) -> None:
+    from sqlalchemy import text
+
+    if column_name not in existing:
+        conn.execute(text(f"ALTER TABLE {table_name} ADD COLUMN {ddl}"))
+        existing.add(column_name)
+
+
+def _add_gstr_support_columns() -> None:
+    from sqlalchemy import inspect, text
+
+    columns_by_table = {
+        "shop_products": [
+            ("cgst_percentage", "cgst_percentage DOUBLE PRECISION NOT NULL DEFAULT 0.0"),
+            ("sgst_percentage", "sgst_percentage DOUBLE PRECISION NOT NULL DEFAULT 0.0"),
+            ("igst_percentage", "igst_percentage DOUBLE PRECISION NOT NULL DEFAULT 0.0"),
+            ("official_uqc", "official_uqc VARCHAR NULL"),
+            ("hsn_description", "hsn_description VARCHAR NULL"),
+            ("cess_rate", "cess_rate DOUBLE PRECISION NOT NULL DEFAULT 0.0"),
+        ],
+        "gst_sales_invoice": [
+            ("invoice_number", "invoice_number VARCHAR NULL DEFAULT ''"),
+            ("invoice_date", "invoice_date BIGINT NULL DEFAULT 0"),
+            ("reverse_charge", "reverse_charge VARCHAR NOT NULL DEFAULT 'N'"),
+            ("gstr_invoice_type", "gstr_invoice_type VARCHAR NOT NULL DEFAULT 'Regular'"),
+            ("customer_state_code", "customer_state_code VARCHAR NULL"),
+            ("ecommerce_gstin", "ecommerce_gstin VARCHAR NULL"),
+            ("ecommerce_operator_name", "ecommerce_operator_name VARCHAR NULL"),
+            ("is_cancelled", "is_cancelled BOOLEAN NOT NULL DEFAULT FALSE"),
+            ("cancelled_at", "cancelled_at TIMESTAMP NULL"),
+        ],
+        "gst_sales_invoice_items": [
+            ("cess_rate", "cess_rate DOUBLE PRECISION NOT NULL DEFAULT 0.0"),
+            ("cess_amount", "cess_amount DOUBLE PRECISION NOT NULL DEFAULT 0.0"),
+            ("uqc", "uqc VARCHAR NULL"),
+            ("hsn_description", "hsn_description VARCHAR NULL"),
+        ],
+        "gst_sales_records": [
+            ("customer_name", "customer_name VARCHAR NULL"),
+            ("business_name", "business_name VARCHAR NULL"),
+            ("customer_phone", "customer_phone VARCHAR NULL"),
+            ("customer_state", "customer_state VARCHAR NULL"),
+            ("customer_state_code", "customer_state_code VARCHAR NULL"),
+            ("reverse_charge", "reverse_charge VARCHAR NOT NULL DEFAULT 'N'"),
+            ("gstr_invoice_type", "gstr_invoice_type VARCHAR NOT NULL DEFAULT 'Regular'"),
+            ("ecommerce_gstin", "ecommerce_gstin VARCHAR NULL"),
+            ("ecommerce_operator_name", "ecommerce_operator_name VARCHAR NULL"),
+            ("cess_rate", "cess_rate DOUBLE PRECISION NOT NULL DEFAULT 0.0"),
+            ("cess_amount", "cess_amount DOUBLE PRECISION NOT NULL DEFAULT 0.0"),
+            ("uqc", "uqc VARCHAR NULL"),
+            ("hsn_description", "hsn_description VARCHAR NULL"),
+            ("is_cancelled", "is_cancelled BOOLEAN NOT NULL DEFAULT FALSE"),
+        ],
+    }
+
+    inspector = inspect(engine)
+    existing_tables = set(inspector.get_table_names())
+
+    with engine.connect() as conn:
+        for table_name, column_defs in columns_by_table.items():
+            if table_name not in existing_tables:
+                continue
+            existing = {c["name"] for c in inspector.get_columns(table_name)}
+            for column_name, ddl in column_defs:
+                _add_column_if_missing(conn, table_name, existing, column_name, ddl)
+        conn.commit()
+
+
+try:
+    _add_gstr_support_columns()
+except Exception as e:  # pragma: no cover
+    print(f"[startup] GSTR support column migration skipped: {e}")
+
+
 # Routers
 app.include_router(auth_routes.router)
 app.include_router(product_routes.router)

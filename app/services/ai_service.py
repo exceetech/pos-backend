@@ -16,67 +16,66 @@ client = Groq(
 def generate_ai_insights(report_data):
 
     prompt = f"""
-You are an expert RETAIL BUSINESS ANALYST working for an AI powered POS system.
+You are a senior retail growth analyst inside a modern POS system.
 
-Your task is to analyze sales data and generate PRACTICAL BUSINESS INSIGHTS that help a shop owner increase profit.
+Your reader is a busy shop owner.
+They do not want theory.
+They want a simple daily action brief that explains what happened, what matters, and what to do next.
 
-RULES:
-- DO NOT generate code or JSON
-- Only provide business insights in plain text
-- DO NOT use emojis or icons
-- Use the 'Rs.' prefix for all currency values (e.g. Rs. 500)
-- Use SHORT lines
-- Keep insights actionable and practical
-- Price is in INR
+Style rules:
+- Plain text only
+- No code
+- No JSON
+- No markdown tables
+- No emojis or icons
+- Use Rs. for money, never use the rupee symbol
+- Keep every line short and clear
+- Prefer practical advice over generic comments
+- Use product names from the data whenever possible
+- If a value is missing, do not invent it
+- Price and sales values are in INR
 
 Sales Data:
 {report_data}
 
-Analyze the data and provide insights for:
-
-1. Best Selling Products  
-2. Slow Selling Products  
-3. Inventory Strategy  
-4. Profit Strategy  
-5. Sales Insights  
-6. Stock Recommendation  
-7. Marketing Ideas  
-
 Return the response EXACTLY in this structure:
 
-BEST SELLING PRODUCTS
-Product name — why it sells well
-Product name — reason
+STORE PULSE
+One short line explaining today's overall business condition.
+One short line showing the biggest opportunity or risk.
 
-SLOW SELLING PRODUCTS
-Product name — why it is slow
+WHAT IS WORKING
+Product name - why it is moving well.
+Product name - what action to take next.
 
-INVENTORY STRATEGY
-Recommended stock levels for fast moving products
-How much inventory should be maintained
+WHAT NEEDS ATTENTION
+Product name - why it may be slow or risky.
+Product name - what to change.
 
-PROFIT STRATEGY
-Pricing improvements
-Upselling ideas
-Bundle suggestions
+STOCK MOVES
+Product name - restock, hold, or reduce.
+Product name - suggested stock action.
 
-SALES INSIGHTS
-Patterns in sales behavior
-Customer buying trends
+PROFIT MOVES
+One pricing, margin, upsell, or bundle idea.
+One practical way to increase average bill value.
 
-STOCK RECOMMENDATION
-Suggested stock levels for top products
-When to restock based on demand
+CUSTOMER SIGNALS
+One line about buying pattern.
+One line about what customers may prefer now.
 
-MARKETING IDEAS
-Promotion ideas
-Cross selling opportunities
-Discount strategies
+NEXT BEST ACTIONS
+Action 1 - immediate action for tomorrow.
+Action 2 - stock, pricing, or promotion action.
+Action 3 - simple experiment to try.
 
 IMPORTANT:
-- Each point must be ONE SHORT line
-- Maximum 2–3 lines per section
-- DO NOT use the Rupee symbol (₹), use 'Rs.' instead.
+- Each section must have 1 to 3 short lines only
+- Avoid repeating the same idea in different sections
+- Do not say "insufficient data" unless the data is truly empty
+- If sales are weak, be direct but helpful
+- If a product is strong, suggest how to use that strength
+- Make the report feel fresh, modern, and useful
 """
 
     try:
@@ -85,15 +84,15 @@ IMPORTANT:
             messages=[
                 {
                     "role": "system",
-                    "content": "You are a professional retail business intelligence expert who provides clean, emoji-free insights using Rs. for currency."
+                    "content": "You are a professional retail business analyst. Write concise, useful, emoji-free business insights for small shop owners. Use Rs. for currency."
                 },
                 {
                     "role": "user",
                     "content": prompt
                 }
             ],
-            temperature=0.3,
-            max_tokens=1000
+            temperature=0.45,
+            max_tokens=900
         )
         return response.choices[0].message.content
     except Exception as e:

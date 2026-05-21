@@ -1,5 +1,5 @@
 import uuid
-from sqlalchemy import Column, String, Float, DateTime, Integer, ForeignKey, BigInteger
+from sqlalchemy import Boolean, Column, String, Float, DateTime, Integer, ForeignKey, BigInteger
 from datetime import datetime
 from app.database import Base
 
@@ -51,3 +51,27 @@ class GstSalesRecord(Base):
 
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    # ── GSTR-1 enrichment fields (v23) ──────────────────────────────
+
+    # Customer detail fields (captured at invoice time).
+    customer_name  = Column(String, nullable=True)
+    business_name  = Column(String, nullable=True)
+    customer_phone = Column(String, nullable=True)
+    customer_state = Column(String, nullable=True)
+    customer_state_code = Column(String, nullable=True)  # 2-digit GST state code
+
+    # Invoice-level GSTR-1 fields.
+    reverse_charge         = Column(String, nullable=False, default="N")
+    gstr_invoice_type      = Column(String, nullable=False, default="Regular")
+    ecommerce_gstin        = Column(String, nullable=True)
+    ecommerce_operator_name = Column(String, nullable=True)
+
+    # Item-level GSTR-1 product master fields.
+    cess_rate       = Column(Float, nullable=False, default=0.0)
+    cess_amount     = Column(Float, nullable=False, default=0.0)
+    uqc             = Column(String, nullable=True)
+    hsn_description = Column(String, nullable=True)
+
+    # Soft cancellation flag.
+    is_cancelled = Column(Boolean, nullable=False, default=False)

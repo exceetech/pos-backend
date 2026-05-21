@@ -11,10 +11,37 @@ from app.models.purchase import Purchase
 from app.models.purchase_item import PurchaseItem
 from app.models.purchase_batch import PurchaseBatch
 from app.models.credit import CreditAccount
+from app.models.shop_products import ShopProduct
+from app.models.global_products import GlobalProduct
 from app.schemas.purchase_schema import PurchaseSyncRequest, PurchaseSyncResponse
+from app.utils import normalize_name
 from fastapi.responses import JSONResponse
 
 router = APIRouter(prefix="/purchases", tags=["Purchases"])
+
+
+def _apply_sales_tax_to_product(sp: ShopProduct | None, item) -> None:
+    """Write sales-tax fields from a purchase line onto a ShopProduct row.
+
+    Safe to call with sp=None (no-op).  Only overwrites tax rates when the
+    purchase line carries a non-zero combined sales rate so we never
+    accidentally zero out rates that were set through the product master.
+    HSN code is updated whenever the line carries one (non-destructive).
+    """
+    if sp is None:
+        return
+    sales_combined = (
+        item.sales_cgst_percentage
+        + item.sales_sgst_percentage
+        + item.sales_igst_percentage
+    )
+    if sales_combined > 0:
+        sp.cgst_percentage  = item.sales_cgst_percentage
+        sp.sgst_percentage  = item.sales_sgst_percentage
+        sp.igst_percentage  = item.sales_igst_percentage
+        sp.default_gst_rate = sales_combined
+    if item.hsn_code:
+        sp.hsn_code = item.hsn_code
 
 
 @router.post("/sync", response_model=PurchaseSyncResponse)
@@ -92,6 +119,38 @@ def sync_purchases(
                         sales_igst_percentage=item.sales_igst_percentage,
                     )
                 )
+
+                # ✅ Update shop_product sales-tax fields regardless of whether the
+                # client knows the server-side product id yet.
+                #   • Known product  → look up directly by shop_product_id (fast path).
+                #   • Unknown product → fall back to name+variant+unit lookup so that
+                #     products added through purchase but not yet fully synced still
+                #     get their tax rates written to the backend.
+                if item.shop_product_id:
+                    sp = db.query(ShopProduct).filter(
+                        ShopProduct.id == item.shop_product_id,
+                        ShopProduct.shop_id == current_shop.id
+                    ).first()
+                    _apply_sales_tax_to_product(sp, item)
+                else:
+                    # Fallback: match by normalised name + variant + unit
+                    gp = db.query(GlobalProduct).filter(
+                        GlobalProduct.name == normalize_name(item.product_name)
+                    ).first()
+                    if gp:
+                        variant = item.variant.strip() if item.variant else None
+                        unit_str = (item.unit or "piece").lower().strip()
+                        sp = db.query(ShopProduct).filter(
+                            ShopProduct.shop_id == current_shop.id,
+                            ShopProduct.global_product_id == gp.id,
+                            ShopProduct.unit == unit_str,
+                            (
+                                ShopProduct.variant_name.is_(None)
+                                if variant is None
+                                else ShopProduct.variant_name == variant
+                            )
+                        ).first()
+                        _apply_sales_tax_to_product(sp, item)
 
                 # ✅ Auto-create PurchaseBatch for Hybrid Inventory
                 if item.shop_product_id:

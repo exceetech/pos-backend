@@ -21,7 +21,7 @@ which is *not* a hard FK — the offline-first client
 generates rows before the bill exists on the server, and
 we don't want batch sync to fail on missing parents.
 """
-from sqlalchemy import Column, Integer, Float, String, ForeignKey, DateTime, Index
+from sqlalchemy import Boolean, Column, Integer, Float, String, ForeignKey, DateTime, BigInteger, Index
 from sqlalchemy.orm import relationship
 from datetime import datetime
 
@@ -63,6 +63,34 @@ class GstSalesInvoice(Base):
 
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
 
+    # ── GSTR-1 fields (v23) ──────────────────────────────────────────
+
+    # Human-readable bill / invoice number (e.g. "INV-0042").
+    invoice_number = Column(String, nullable=True, default="")
+
+    # Epoch millis — client clock at invoice creation time.
+    invoice_date = Column(BigInteger, nullable=True, default=0)
+
+    # "Y" = reverse charge applicable; "N" = not applicable (default).
+    reverse_charge = Column(String, nullable=False, default="N")
+
+    # GSTR-1 invoice type: Regular | SEZ supplies with payment |
+    # SEZ supplies without payment | Deemed Exp
+    gstr_invoice_type = Column(String, nullable=False, default="Regular")
+
+    # 2-digit GST state code for Place of Supply (GSTR-1).
+    customer_state_code = Column(String, nullable=True)
+
+    # E-Commerce Operator GSTIN (only for e-commerce sales).
+    ecommerce_gstin = Column(String, nullable=True)
+
+    # E-Commerce Operator Name.
+    ecommerce_operator_name = Column(String, nullable=True)
+
+    # Soft cancellation — NEVER hard-delete, set this flag instead.
+    is_cancelled = Column(Boolean, nullable=False, default=False)
+    cancelled_at = Column(DateTime, nullable=True)
+
     # Cascade deletes — deleting an invoice removes its lines.
     items = relationship(
         "GstSalesInvoiceItem",
@@ -101,6 +129,12 @@ class GstSalesInvoiceItem(Base):
     igst_amount = Column(Float, nullable=False, default=0.0)
 
     net_value = Column(Float, nullable=False, default=0.0)
+
+    # ── GSTR-1 item-level fields (v23) ──
+    cess_rate   = Column(Float, nullable=False, default=0.0)
+    cess_amount = Column(Float, nullable=False, default=0.0)
+    uqc         = Column(String, nullable=True)          # GST Unit Quantity Code
+    hsn_description = Column(String, nullable=True)       # product description for HSN summary
 
     invoice = relationship("GstSalesInvoice", back_populates="items")
 

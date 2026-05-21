@@ -60,6 +60,22 @@ class GstSalesRecordCreate(BaseModel):
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
 
+    # ── GSTR-1 enrichment fields (v23) ──
+    customer_name: Optional[str] = None
+    business_name: Optional[str] = None
+    customer_phone: Optional[str] = None
+    customer_state: Optional[str] = None
+    customer_state_code: Optional[str] = None
+    reverse_charge: str = "N"
+    gstr_invoice_type: str = "Regular"
+    ecommerce_gstin: Optional[str] = None
+    ecommerce_operator_name: Optional[str] = None
+    cess_rate: float = 0.0
+    cess_amount: float = 0.0
+    uqc: Optional[str] = None
+    hsn_description: Optional[str] = None
+    is_cancelled: bool = False
+
 
 class GstSalesSyncRequest(BaseModel):
     records: List[GstSalesRecordCreate]

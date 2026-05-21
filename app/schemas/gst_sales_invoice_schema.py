@@ -36,6 +36,12 @@ class CreateGstSalesItem(BaseModel):
 
     net_value: float = 0.0
 
+    # ── GSTR-1 item-level fields (v23) ──
+    cess_rate: float = 0.0
+    cess_amount: float = 0.0
+    uqc: Optional[str] = None
+    hsn_description: Optional[str] = None
+
 
 class CreateGstSalesInvoice(BaseModel):
     local_id: int
@@ -59,6 +65,17 @@ class CreateGstSalesInvoice(BaseModel):
 
     # epoch millis — converted to a UTC datetime on insert
     created_at: int = 0
+
+    # ── GSTR-1 invoice-level fields (v23) ──
+    invoice_number: str = ""
+    invoice_date: int = 0          # epoch millis
+    reverse_charge: str = "N"
+    gstr_invoice_type: str = "Regular"
+    customer_state_code: Optional[str] = None
+    ecommerce_gstin: Optional[str] = None
+    ecommerce_operator_name: Optional[str] = None
+    is_cancelled: bool = False
+    cancelled_at: Optional[int] = None  # epoch millis
 
     items: List[CreateGstSalesItem] = []
 
@@ -98,6 +115,12 @@ class GstSalesInvoiceItemOut(BaseModel):
     igst_amount: float = 0.0
     net_value: float = 0.0
 
+    # ── GSTR-1 item-level fields (v23) ──
+    cess_rate: float = 0.0
+    cess_amount: float = 0.0
+    uqc: Optional[str] = None
+    hsn_description: Optional[str] = None
+
     class Config:
         from_attributes = True
 
@@ -125,6 +148,17 @@ class GstSalesInvoiceOut(BaseModel):
 
     created_at: Optional[datetime] = None
 
+    # ── GSTR-1 invoice-level fields (v23) ──
+    invoice_number: str = ""
+    invoice_date: Optional[int] = None
+    reverse_charge: str = "N"
+    gstr_invoice_type: str = "Regular"
+    customer_state_code: Optional[str] = None
+    ecommerce_gstin: Optional[str] = None
+    ecommerce_operator_name: Optional[str] = None
+    is_cancelled: bool = False
+    cancelled_at: Optional[datetime] = None
+
     items: List[GstSalesInvoiceItemOut] = []
 
     class Config:
@@ -139,3 +173,23 @@ class GstSalesInvoiceOut(BaseModel):
 
 class GstSalesInvoiceCreate(CreateGstSalesInvoice):
     pass
+
+
+# --------------------------------------------------------------------
+#  Cancel / Void  (POST /gst-sales/cancel)
+# --------------------------------------------------------------------
+
+class GstSalesCancelRequest(BaseModel):
+    """
+    Sent by the mobile client after the user voids an invoice.
+    Either `invoice_number` or `server_id` is required to locate the row.
+    """
+    invoice_number: Optional[str] = None
+    server_id: Optional[int] = None
+    cancelled_at: Optional[int] = None   # epoch millis; server uses now() if omitted
+
+
+class GstSalesCancelResponse(BaseModel):
+    success: bool = True
+    server_id: Optional[int] = None
+    message: Optional[str] = None

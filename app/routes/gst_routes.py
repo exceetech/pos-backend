@@ -200,23 +200,38 @@ def sync_gst_sales_records(
             # Update only if incoming is newer (conflict resolution: prefer latest updated_at)
             incoming_ts = rec.updated_at or datetime.utcnow()
             if existing.updated_at and incoming_ts > existing.updated_at:
-                existing.invoice_number = rec.invoice_number
-                existing.customer_type = rec.customer_type
-                existing.customer_gstin = rec.customer_gstin
-                existing.place_of_supply = rec.place_of_supply
-                existing.supply_type = rec.supply_type
-                existing.hsn_code = rec.hsn_code
-                existing.product_name = rec.product_name
-                existing.quantity = rec.quantity
-                existing.unit = rec.unit
-                existing.taxable_value = rec.taxable_value
-                existing.gst_rate = rec.gst_rate
-                existing.cgst_amount = rec.cgst_amount
-                existing.sgst_amount = rec.sgst_amount
-                existing.igst_amount = rec.igst_amount
-                existing.total_amount = rec.total_amount
-                existing.sync_status = "synced"
-                existing.updated_at = datetime.utcnow()
+                existing.invoice_number          = rec.invoice_number
+                existing.customer_type           = rec.customer_type
+                existing.customer_gstin          = rec.customer_gstin
+                existing.place_of_supply         = rec.place_of_supply
+                existing.supply_type             = rec.supply_type
+                existing.hsn_code                = rec.hsn_code
+                existing.product_name            = rec.product_name
+                existing.quantity                = rec.quantity
+                existing.unit                    = rec.unit
+                existing.taxable_value           = rec.taxable_value
+                existing.gst_rate                = rec.gst_rate
+                existing.cgst_amount             = rec.cgst_amount
+                existing.sgst_amount             = rec.sgst_amount
+                existing.igst_amount             = rec.igst_amount
+                existing.total_amount            = rec.total_amount
+                # ── GSTR-1 enrichment fields (v23) ──
+                existing.customer_name           = rec.customer_name
+                existing.business_name           = rec.business_name
+                existing.customer_phone          = rec.customer_phone
+                existing.customer_state          = rec.customer_state
+                existing.customer_state_code     = rec.customer_state_code
+                existing.reverse_charge          = rec.reverse_charge
+                existing.gstr_invoice_type       = rec.gstr_invoice_type
+                existing.ecommerce_gstin         = rec.ecommerce_gstin
+                existing.ecommerce_operator_name = rec.ecommerce_operator_name
+                existing.cess_rate               = rec.cess_rate
+                existing.cess_amount             = rec.cess_amount
+                existing.uqc                     = rec.uqc
+                existing.hsn_description         = rec.hsn_description
+                existing.is_cancelled            = rec.is_cancelled
+                existing.sync_status             = "synced"
+                existing.updated_at              = datetime.utcnow()
                 synced += 1
             else:
                 skipped += 1
@@ -242,7 +257,22 @@ def sync_gst_sales_records(
                 total_amount=rec.total_amount,
                 sync_status="synced",
                 device_id=rec.device_id or "",
-                created_at=rec.created_at or datetime.utcnow()
+                created_at=rec.created_at or datetime.utcnow(),
+                # ── GSTR-1 enrichment fields (v23) ──
+                customer_name=rec.customer_name,
+                business_name=rec.business_name,
+                customer_phone=rec.customer_phone,
+                customer_state=rec.customer_state,
+                customer_state_code=rec.customer_state_code,
+                reverse_charge=rec.reverse_charge,
+                gstr_invoice_type=rec.gstr_invoice_type,
+                ecommerce_gstin=rec.ecommerce_gstin,
+                ecommerce_operator_name=rec.ecommerce_operator_name,
+                cess_rate=rec.cess_rate,
+                cess_amount=rec.cess_amount,
+                uqc=rec.uqc,
+                hsn_description=rec.hsn_description,
+                is_cancelled=rec.is_cancelled,
             )
             db.add(new_rec)
             synced += 1
