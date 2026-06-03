@@ -102,10 +102,14 @@ def sync_inventory_logs(
 
             new_stock = old_stock + log.quantity
 
-            new_avg = (
-                ((old_stock * old_avg) + (log.quantity * log.price))
-                / new_stock
-            ) if new_stock > 0 else log.price
+            if log.price <= 0:
+                new_avg = old_avg
+            elif old_stock <= 0:
+                new_avg = log.price
+            elif new_stock <= 0:
+                new_avg = log.price
+            else:
+                new_avg = ((old_stock * old_avg) + (log.quantity * log.price)) / new_stock
 
             inventory.current_stock = new_stock
             inventory.average_cost = new_avg

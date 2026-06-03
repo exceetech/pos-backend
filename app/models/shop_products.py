@@ -31,3 +31,4 @@ class ShopProduct(Base):
     official_uqc     = Column(String, nullable=True)   # explicit GST UQC override
     hsn_description  = Column(String, nullable=True)   # description for HSN summary
     cess_rate        = Column(Float, default=0.0, nullable=False)
+    supply_classification = Column(String, nullable=False, default="TAXABLE") # TAXABLE, NIL_RATED, EXEMPT, NON_GST

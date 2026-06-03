@@ -36,3 +36,14 @@ class PurchaseItem(Base):
     sales_cgst_percentage = Column(Float, default=0.0)
     sales_sgst_percentage = Column(Float, default=0.0)
     sales_igst_percentage = Column(Float, default=0.0)
+
+    # GSTR-2 support fields
+    cess_percentage = Column(Float, nullable=False, default=0.0)
+    cess_amount = Column(Float, nullable=False, default=0.0)
+    eligibility_for_itc = Column(String, nullable=False, default="Inputs")
+    availed_itc_igst = Column(Float, nullable=False, default=0.0)
+    availed_itc_cgst = Column(Float, nullable=False, default=0.0)
+    availed_itc_sgst = Column(Float, nullable=False, default=0.0)
+    availed_itc_cess = Column(Float, nullable=False, default=0.0)
+    hsn_description = Column(String, nullable=False, default="")
+    official_uqc = Column(String, nullable=False, default="")

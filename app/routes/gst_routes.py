@@ -225,6 +225,15 @@ def sync_gst_sales_records(
                 existing.gstr_invoice_type       = rec.gstr_invoice_type
                 existing.ecommerce_gstin         = rec.ecommerce_gstin
                 existing.ecommerce_operator_name = rec.ecommerce_operator_name
+                # New ECO fields (Table 14/15)
+                existing.eco_nature_of_supply    = rec.eco_nature_of_supply
+                existing.eco_document_type       = rec.eco_document_type
+                existing.eco_supplier_gstin      = rec.eco_supplier_gstin
+                existing.eco_supplier_name       = rec.eco_supplier_name
+                existing.eco_recipient_gstin     = rec.eco_recipient_gstin
+                existing.eco_recipient_name      = rec.eco_recipient_name
+                existing.eco_role                = rec.eco_role
+
                 existing.cess_rate               = rec.cess_rate
                 existing.cess_amount             = rec.cess_amount
                 existing.uqc                     = rec.uqc
@@ -268,6 +277,14 @@ def sync_gst_sales_records(
                 gstr_invoice_type=rec.gstr_invoice_type,
                 ecommerce_gstin=rec.ecommerce_gstin,
                 ecommerce_operator_name=rec.ecommerce_operator_name,
+                # New ECO fields (Table 14/15)
+                eco_nature_of_supply=rec.eco_nature_of_supply,
+                eco_document_type=rec.eco_document_type,
+                eco_supplier_gstin=rec.eco_supplier_gstin,
+                eco_supplier_name=rec.eco_supplier_name,
+                eco_recipient_gstin=rec.eco_recipient_gstin,
+                eco_recipient_name=rec.eco_recipient_name,
+                eco_role=rec.eco_role,
                 cess_rate=rec.cess_rate,
                 cess_amount=rec.cess_amount,
                 uqc=rec.uqc,

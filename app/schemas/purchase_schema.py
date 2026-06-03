@@ -31,6 +31,16 @@ class PurchaseItemDto(BaseModel):
     sales_sgst_percentage: float = 0.0
     sales_igst_percentage: float = 0.0
 
+    cess_percentage: float = 0.0
+    cess_amount: float = 0.0
+    eligibility_for_itc: str = "Inputs"
+    availed_itc_igst: float = 0.0
+    availed_itc_cgst: float = 0.0
+    availed_itc_sgst: float = 0.0
+    availed_itc_cess: float = 0.0
+    hsn_description: str = ""
+    official_uqc: str = ""
+
 
 class PurchaseDto(BaseModel):
     local_id: int
@@ -56,6 +66,17 @@ class PurchaseDto(BaseModel):
     is_credit: bool = False
     credit_account_id: Optional[int] = None
     created_at: float
+
+    place_of_supply_code: str = ""
+    reverse_charge: str = "N"
+    invoice_type: str = "Regular"
+    supply_type: str = "intrastate"
+    cess_paid: float = 0.0
+    eligibility_for_itc: str = "Inputs"
+    availed_itc_integrated_tax: float = 0.0
+    availed_itc_central_tax: float = 0.0
+    availed_itc_state_tax: float = 0.0
+    availed_itc_cess: float = 0.0
 
     items: List[PurchaseItemDto]
 

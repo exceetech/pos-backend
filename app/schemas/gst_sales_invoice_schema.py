@@ -41,6 +41,7 @@ class CreateGstSalesItem(BaseModel):
     cess_amount: float = 0.0
     uqc: Optional[str] = None
     hsn_description: Optional[str] = None
+    supply_classification: str = "TAXABLE"
 
 
 class CreateGstSalesInvoice(BaseModel):
@@ -74,6 +75,21 @@ class CreateGstSalesInvoice(BaseModel):
     customer_state_code: Optional[str] = None
     ecommerce_gstin: Optional[str] = None
     ecommerce_operator_name: Optional[str] = None
+
+    # New ECO fields (Table 14/15)
+    eco_nature_of_supply: Optional[str] = None
+    eco_document_type: Optional[str] = None
+    eco_supplier_gstin: Optional[str] = None
+    eco_supplier_name: Optional[str] = None
+    eco_recipient_gstin: Optional[str] = None
+    eco_recipient_name: Optional[str] = None
+    eco_role: Optional[str] = None
+
+    # ── GSTR-1 DOCS fields ──
+    document_type: Optional[str] = None
+    document_nature: Optional[str] = None
+    document_series: Optional[str] = None
+
     is_cancelled: bool = False
     cancelled_at: Optional[int] = None  # epoch millis
 
@@ -120,6 +136,7 @@ class GstSalesInvoiceItemOut(BaseModel):
     cess_amount: float = 0.0
     uqc: Optional[str] = None
     hsn_description: Optional[str] = None
+    supply_classification: str = "TAXABLE"
 
     class Config:
         from_attributes = True
@@ -156,6 +173,20 @@ class GstSalesInvoiceOut(BaseModel):
     customer_state_code: Optional[str] = None
     ecommerce_gstin: Optional[str] = None
     ecommerce_operator_name: Optional[str] = None
+
+    # New ECO fields (Table 14/15)
+    eco_nature_of_supply: Optional[str] = None
+    eco_document_type: Optional[str] = None
+    eco_supplier_gstin: Optional[str] = None
+    eco_supplier_name: Optional[str] = None
+    eco_recipient_gstin: Optional[str] = None
+    eco_recipient_name: Optional[str] = None
+    eco_role: Optional[str] = None
+
+    document_type: Optional[str] = None
+    document_nature: Optional[str] = None
+    document_series: Optional[str] = None
+
     is_cancelled: bool = False
     cancelled_at: Optional[datetime] = None
 

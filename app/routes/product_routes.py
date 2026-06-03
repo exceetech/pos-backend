@@ -202,7 +202,8 @@ def add_to_shop(
         igst_percentage=data.igst_percentage or 0.0,
         official_uqc=(data.official_uqc or "").strip().upper() or None,
         hsn_description=data.hsn_description or None,
-        cess_rate=data.cess_rate or 0.0
+        cess_rate=data.cess_rate or 0.0,
+        supply_classification=data.supply_classification or "TAXABLE"
     )
 
     db.add(new_product)
@@ -547,7 +548,8 @@ def _upsert_shop_product(
         igst_percentage   = data.igst_percentage,
         official_uqc      = (data.official_uqc or "").strip().upper() or None,
         hsn_description   = data.hsn_description or None,
-        cess_rate         = data.cess_rate or 0.0
+        cess_rate         = data.cess_rate or 0.0,
+        supply_classification = data.supply_classification or "TAXABLE"
     )
     db.add(sp)
     db.flush()

@@ -52,6 +52,35 @@ class PurchaseReturnDto(BaseModel):
 
     created_at: int  # epoch millis from client
 
+    # ── Debit/Credit Note fields (v25+) ──────────────────────────────────
+    # All optional so old clients that haven't updated continue to work.
+    note_number:             Optional[str] = None
+    note_date:               Optional[int] = None   # epoch millis
+    note_type:               Optional[str] = None   # "D" or "C"
+    original_invoice_id:     Optional[int] = None
+    original_invoice_number: Optional[str] = None
+    original_invoice_date:   Optional[int] = None   # epoch millis
+    place_of_supply:         Optional[str] = None
+    supply_type:             Optional[str] = "intrastate"
+    cess_amount:             float = 0.0
+    tax_amount:              float = 0.0
+    total_amount:            float = 0.0
+    document_type:           Optional[str] = None
+    document_nature:         Optional[str] = None
+    document_series:         Optional[str] = None
+
+    pre_gst: str = "N"
+    reason_for_issuing_document: str = "Purchase return"
+    note_refund_voucher_value: float = 0.0
+    rate: float = 0.0
+    eligibility_for_itc: str = "Inputs"
+    availed_itc_integrated_tax: float = 0.0
+    availed_itc_central_tax: float = 0.0
+    availed_itc_state_tax: float = 0.0
+    availed_itc_cess: float = 0.0
+    invoice_type: str = "Regular"
+    place_of_supply_code: str = ""
+
 
 class PurchaseReturnCreateRequest(PurchaseReturnDto):
     """Single-row create — same fields as the DTO. Wrapped here so
@@ -95,6 +124,34 @@ class PurchaseReturnOut(BaseModel):
     credit_account_id: Optional[int]
 
     created_at: datetime
+
+    # ── Debit/Credit Note fields (v25+) ──────────────────────────────────
+    note_number:             Optional[str]  = None
+    note_date:               Optional[int]  = None
+    note_type:               Optional[str]  = None
+    original_invoice_id:     Optional[int]  = None
+    original_invoice_number: Optional[str]  = None
+    original_invoice_date:   Optional[int]  = None
+    place_of_supply:         Optional[str]  = None
+    supply_type:             Optional[str]  = None
+    cess_amount:             Optional[float] = None
+    tax_amount:              Optional[float] = None
+    total_amount:            Optional[float] = None
+    document_type:           Optional[str]  = None
+    document_nature:         Optional[str]  = None
+    document_series:         Optional[str]  = None
+
+    pre_gst:                 Optional[str]  = None
+    reason_for_issuing_document: Optional[str] = None
+    note_refund_voucher_value: Optional[float] = None
+    rate:                    Optional[float] = None
+    eligibility_for_itc:     Optional[str]  = None
+    availed_itc_integrated_tax: Optional[float] = None
+    availed_itc_central_tax:  Optional[float] = None
+    availed_itc_state_tax:    Optional[float] = None
+    availed_itc_cess:         Optional[float] = None
+    invoice_type:            Optional[str]  = None
+    place_of_supply_code:    Optional[str]  = None
 
 
 class PurchaseReturnSyncResponse(BaseModel):

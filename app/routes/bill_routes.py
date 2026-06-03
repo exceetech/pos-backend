@@ -28,11 +28,30 @@ def create_bill(
     discount = data.discount or 0.0
 
     # 🔥 BILL NUMBER
+    from datetime import datetime
+    current_year = str(datetime.now().year)
+
     last_bill = db.query(Bill).filter(
         Bill.shop_id == current_shop.id
     ).order_by(Bill.id.desc()).first()
 
-    next_bill_number = 500000 if not last_bill else int(last_bill.bill_number) + 1
+    next_num = 1
+    if last_bill and last_bill.bill_number:
+        parts = str(last_bill.bill_number).split("_")
+        if len(parts) >= 3 and parts[1] == current_year:
+            try:
+                next_num = int(parts[-1]) + 1
+            except ValueError:
+                next_num = 1
+        elif len(parts) >= 3 and parts[1] != current_year:
+            next_num = 1
+        else:
+            try:
+                next_num = int(parts[-1]) + 1
+            except ValueError:
+                next_num = 1
+
+    next_bill_number = f"INV_{current_year}_{next_num}"
 
     # 🔥 GST SETTINGS
     settings = db.query(BillingSettings).filter(

@@ -25,6 +25,7 @@ class AddProductRequest(BaseModel):
     official_uqc: Optional[str] = None
     hsn_description: Optional[str] = None
     cess_rate: float = 0.0
+    supply_classification: str = "TAXABLE"
 
 class ProductResponse(BaseModel):
     id: int
@@ -76,6 +77,7 @@ class ShopProductDto(BaseModel):
     official_uqc: Optional[str] = None
     hsn_description: Optional[str] = None
     cess_rate: float = 0.0
+    supply_classification: str = "TAXABLE"
 
 class ShopProductSyncRequest(BaseModel):
     products: List[ShopProductDto]

@@ -21,6 +21,7 @@ from app.routes.purchase_return_routes import router as purchase_return_router
 from app.routes.scrap_routes import router as scrap_router
 from app.routes.gst_sales_invoice_routes import router as gst_sales_invoice_router
 from app.routes.purchase_batch_routes import router as purchase_batch_router
+from app.routes.credit_note_routes import router as credit_note_router
 
 
 
@@ -152,6 +153,13 @@ def _add_gstr_support_columns() -> None:
             ("customer_state_code", "customer_state_code VARCHAR NULL"),
             ("ecommerce_gstin", "ecommerce_gstin VARCHAR NULL"),
             ("ecommerce_operator_name", "ecommerce_operator_name VARCHAR NULL"),
+            ("eco_nature_of_supply", "eco_nature_of_supply VARCHAR NULL"),
+            ("eco_document_type", "eco_document_type VARCHAR NULL"),
+            ("eco_supplier_gstin", "eco_supplier_gstin VARCHAR NULL"),
+            ("eco_supplier_name", "eco_supplier_name VARCHAR NULL"),
+            ("eco_recipient_gstin", "eco_recipient_gstin VARCHAR NULL"),
+            ("eco_recipient_name", "eco_recipient_name VARCHAR NULL"),
+            ("eco_role", "eco_role VARCHAR NULL"),
             ("is_cancelled", "is_cancelled BOOLEAN NOT NULL DEFAULT FALSE"),
             ("cancelled_at", "cancelled_at TIMESTAMP NULL"),
         ],
@@ -171,6 +179,13 @@ def _add_gstr_support_columns() -> None:
             ("gstr_invoice_type", "gstr_invoice_type VARCHAR NOT NULL DEFAULT 'Regular'"),
             ("ecommerce_gstin", "ecommerce_gstin VARCHAR NULL"),
             ("ecommerce_operator_name", "ecommerce_operator_name VARCHAR NULL"),
+            ("eco_nature_of_supply", "eco_nature_of_supply VARCHAR NULL"),
+            ("eco_document_type", "eco_document_type VARCHAR NULL"),
+            ("eco_supplier_gstin", "eco_supplier_gstin VARCHAR NULL"),
+            ("eco_supplier_name", "eco_supplier_name VARCHAR NULL"),
+            ("eco_recipient_gstin", "eco_recipient_gstin VARCHAR NULL"),
+            ("eco_recipient_name", "eco_recipient_name VARCHAR NULL"),
+            ("eco_role", "eco_role VARCHAR NULL"),
             ("cess_rate", "cess_rate DOUBLE PRECISION NOT NULL DEFAULT 0.0"),
             ("cess_amount", "cess_amount DOUBLE PRECISION NOT NULL DEFAULT 0.0"),
             ("uqc", "uqc VARCHAR NULL"),
@@ -198,6 +213,297 @@ except Exception as e:  # pragma: no cover
     print(f"[startup] GSTR support column migration skipped: {e}")
 
 
+# ──────────────────────────────────────────────────────────────────────
+# In-place migration: add Debit Note columns to `purchase_returns` and
+# create `credit_notes` / `credit_note_items` tables (v25).
+#
+# Base.metadata.create_all() handles the two new tables automatically
+# (they don't exist yet on deployed DBs). The ALTER TABLE block is
+# needed for the new nullable columns on the existing purchase_returns
+# table — create_all() never alters tables that already exist.
+# ──────────────────────────────────────────────────────────────────────
+def _migrate_v25() -> None:
+    from sqlalchemy import inspect, text
+
+    # ── 1. Ensure credit_notes and credit_note_items tables exist ────────
+    # Importing the models registers them with Base.metadata so
+    # create_all() picks them up.  This is belt-and-braces for fresh DBs;
+    # the explicit create below handles already-deployed DBs where
+    # create_all() has already run without these models present.
+    from app.models.credit_note import CreditNote, CreditNoteItem  # noqa: F401
+    CreditNote.__table__.create(bind=engine, checkfirst=True)
+    CreditNoteItem.__table__.create(bind=engine, checkfirst=True)
+
+    # ── 2. Add debit-note columns to purchase_returns ────────────────────
+    new_cols = [
+        ("note_number",             "note_number VARCHAR NULL"),
+        ("note_date",               "note_date BIGINT NULL"),
+        ("note_type",               "note_type VARCHAR(1) NULL"),
+        ("original_invoice_id",     "original_invoice_id INTEGER NULL"),
+        ("original_invoice_number", "original_invoice_number VARCHAR NULL"),
+        ("original_invoice_date",   "original_invoice_date BIGINT NULL"),
+        ("place_of_supply",         "place_of_supply VARCHAR NULL"),
+        ("supply_type",             "supply_type VARCHAR NULL DEFAULT 'intrastate'"),
+        ("cess_amount",             "cess_amount DOUBLE PRECISION NULL DEFAULT 0.0"),
+    ]
+
+    # Nullable column names — if any were previously created with NOT NULL
+    # (e.g. by an earlier create_all() run before this migration was written),
+    # we must explicitly drop that constraint so old clients (which don't send
+    # debit-note fields) can still insert rows without crashing.
+    nullable_cols = {
+        "note_number", "note_date", "note_type",
+        "original_invoice_id", "original_invoice_number", "original_invoice_date",
+        "place_of_supply", "supply_type", "cess_amount",
+    }
+
+    with engine.connect() as conn:
+        inspector = inspect(engine)
+        existing_col_info = {c["name"]: c for c in inspector.get_columns("purchase_returns")}
+        existing = set(existing_col_info.keys())
+
+        for col_name, ddl in new_cols:
+            if col_name not in existing:
+                conn.execute(text(f"ALTER TABLE purchase_returns ADD COLUMN {ddl}"))
+                existing.add(col_name)
+            elif col_name in nullable_cols:
+                # Column exists — ensure it is nullable. On PostgreSQL the
+                # column may have been created with NOT NULL by an earlier
+                # create_all() run.  SQLite ignores DROP NOT NULL (no-op).
+                try:
+                    conn.execute(text(
+                        f"ALTER TABLE purchase_returns "
+                        f"ALTER COLUMN {col_name} DROP NOT NULL"
+                    ))
+                except Exception:
+                    pass  # SQLite or already nullable — safe to ignore
+
+        conn.commit()
+
+
+try:
+    _migrate_v25()
+except Exception as e:  # pragma: no cover
+    print(f"[startup] v25 migration skipped: {e}")
+
+
+def _migrate_v27() -> None:
+    from sqlalchemy import inspect, text
+
+    with engine.connect() as conn:
+        inspector = inspect(engine)
+        if "credit_notes" not in inspector.get_table_names():
+            return
+            
+        cols = {c["name"]: c for c in inspector.get_columns("credit_notes")}
+        
+        if "note_supply_type" not in cols:
+            conn.execute(text("ALTER TABLE credit_notes ADD COLUMN note_supply_type VARCHAR NULL DEFAULT 'Regular'"))
+            
+        conn.commit()
+
+try:
+    _migrate_v27()
+except Exception as e:
+    print(f"[startup] v27 migration skipped: {e}")
+
+
+def _migrate_v28() -> None:
+    from sqlalchemy import inspect, text
+
+    with engine.connect() as conn:
+        inspector = inspect(engine)
+
+        if "shop_products" in inspector.get_table_names():
+            cols = {c["name"]: c for c in inspector.get_columns("shop_products")}
+            if "supply_classification" not in cols:
+                conn.execute(text("ALTER TABLE shop_products ADD COLUMN supply_classification VARCHAR NOT NULL DEFAULT 'TAXABLE'"))
+
+        if "gst_sales_invoice_items" in inspector.get_table_names():
+            cols = {c["name"]: c for c in inspector.get_columns("gst_sales_invoice_items")}
+            if "supply_classification" not in cols:
+                conn.execute(text("ALTER TABLE gst_sales_invoice_items ADD COLUMN supply_classification VARCHAR NOT NULL DEFAULT 'TAXABLE'"))
+
+        if "gst_sales_invoice" in inspector.get_table_names():
+            cols = {c["name"]: c for c in inspector.get_columns("gst_sales_invoice")}
+            if "document_type" not in cols:
+                conn.execute(text("ALTER TABLE gst_sales_invoice ADD COLUMN document_type VARCHAR NULL"))
+            if "document_nature" not in cols:
+                conn.execute(text("ALTER TABLE gst_sales_invoice ADD COLUMN document_nature VARCHAR NULL"))
+            if "document_series" not in cols:
+                conn.execute(text("ALTER TABLE gst_sales_invoice ADD COLUMN document_series VARCHAR NULL"))
+
+        conn.commit()
+
+try:
+    _migrate_v28()
+except Exception as e:
+    print(f"[startup] v28 migration skipped: {e}")
+
+
+def _migrate_v29() -> None:
+    from sqlalchemy import inspect, text
+
+    with engine.connect() as conn:
+        inspector = inspect(engine)
+
+        if "credit_notes" in inspector.get_table_names():
+            cols = {c["name"]: c for c in inspector.get_columns("credit_notes")}
+            if "document_type" not in cols:
+                conn.execute(text("ALTER TABLE credit_notes ADD COLUMN document_type VARCHAR NULL"))
+            if "document_nature" not in cols:
+                conn.execute(text("ALTER TABLE credit_notes ADD COLUMN document_nature VARCHAR NULL"))
+            if "document_series" not in cols:
+                conn.execute(text("ALTER TABLE credit_notes ADD COLUMN document_series VARCHAR NULL"))
+
+        conn.commit()
+
+try:
+    _migrate_v29()
+except Exception as e:
+    print(f"[startup] v29 migration skipped: {e}")
+
+
+def _migrate_v30() -> None:
+    from sqlalchemy import inspect, text
+
+    with engine.connect() as conn:
+        inspector = inspect(engine)
+
+        if "purchases" in inspector.get_table_names():
+            cols = {c["name"]: c for c in inspector.get_columns("purchases")}
+            
+            # Columns to add
+            cols_to_add = {
+                "local_id": "ALTER TABLE purchases ADD COLUMN local_id INTEGER NULL",
+                "place_of_supply_code": "ALTER TABLE purchases ADD COLUMN place_of_supply_code VARCHAR NOT NULL DEFAULT ''",
+                "reverse_charge": "ALTER TABLE purchases ADD COLUMN reverse_charge VARCHAR NOT NULL DEFAULT 'N'",
+                "invoice_type": "ALTER TABLE purchases ADD COLUMN invoice_type VARCHAR NOT NULL DEFAULT 'Regular'",
+                "supply_type": "ALTER TABLE purchases ADD COLUMN supply_type VARCHAR NOT NULL DEFAULT 'intrastate'",
+                "cess_paid": "ALTER TABLE purchases ADD COLUMN cess_paid DOUBLE PRECISION NOT NULL DEFAULT 0.0",
+                "eligibility_for_itc": "ALTER TABLE purchases ADD COLUMN eligibility_for_itc VARCHAR NOT NULL DEFAULT 'Inputs'",
+                "availed_itc_integrated_tax": "ALTER TABLE purchases ADD COLUMN availed_itc_integrated_tax DOUBLE PRECISION NOT NULL DEFAULT 0.0",
+                "availed_itc_central_tax": "ALTER TABLE purchases ADD COLUMN availed_itc_central_tax DOUBLE PRECISION NOT NULL DEFAULT 0.0",
+                "availed_itc_state_tax": "ALTER TABLE purchases ADD COLUMN availed_itc_state_tax DOUBLE PRECISION NOT NULL DEFAULT 0.0",
+                "availed_itc_cess": "ALTER TABLE purchases ADD COLUMN availed_itc_cess DOUBLE PRECISION NOT NULL DEFAULT 0.0"
+            }
+            
+            for col, sql in cols_to_add.items():
+                if col not in cols:
+                    conn.execute(text(sql))
+            
+            # Create index for local_id
+            try:
+                conn.execute(text("CREATE INDEX IF NOT EXISTS ix_purchases_local_id ON purchases (local_id)"))
+            except Exception:
+                pass
+
+        conn.commit()
+
+try:
+    _migrate_v30()
+except Exception as e:
+    print(f"[startup] v30 migration skipped: {e}")
+
+
+def _migrate_v31() -> None:
+    from sqlalchemy import inspect, text
+
+    with engine.connect() as conn:
+        inspector = inspect(engine)
+
+        if "purchase_items" in inspector.get_table_names():
+            cols = {c["name"]: c for c in inspector.get_columns("purchase_items")}
+            
+            # Columns to add
+            cols_to_add = {
+                "cess_percentage": "ALTER TABLE purchase_items ADD COLUMN cess_percentage DOUBLE PRECISION NOT NULL DEFAULT 0.0",
+                "cess_amount": "ALTER TABLE purchase_items ADD COLUMN cess_amount DOUBLE PRECISION NOT NULL DEFAULT 0.0",
+                "eligibility_for_itc": "ALTER TABLE purchase_items ADD COLUMN eligibility_for_itc VARCHAR NOT NULL DEFAULT 'Inputs'",
+                "availed_itc_igst": "ALTER TABLE purchase_items ADD COLUMN availed_itc_igst DOUBLE PRECISION NOT NULL DEFAULT 0.0",
+                "availed_itc_cgst": "ALTER TABLE purchase_items ADD COLUMN availed_itc_cgst DOUBLE PRECISION NOT NULL DEFAULT 0.0",
+                "availed_itc_sgst": "ALTER TABLE purchase_items ADD COLUMN availed_itc_sgst DOUBLE PRECISION NOT NULL DEFAULT 0.0",
+                "availed_itc_cess": "ALTER TABLE purchase_items ADD COLUMN availed_itc_cess DOUBLE PRECISION NOT NULL DEFAULT 0.0",
+                "hsn_description": "ALTER TABLE purchase_items ADD COLUMN hsn_description VARCHAR NOT NULL DEFAULT ''",
+                "official_uqc": "ALTER TABLE purchase_items ADD COLUMN official_uqc VARCHAR NOT NULL DEFAULT ''"
+            }
+            
+            for col, sql in cols_to_add.items():
+                if col not in cols:
+                    conn.execute(text(sql))
+
+        conn.commit()
+
+try:
+    _migrate_v31()
+except Exception as e:
+    print(f"[startup] v31 migration skipped: {e}")
+
+
+def _migrate_v32() -> None:
+    from sqlalchemy import inspect, text
+
+    with engine.connect() as conn:
+        inspector = inspect(engine)
+
+        if "purchase_returns" in inspector.get_table_names():
+            cols = {c["name"]: c for c in inspector.get_columns("purchase_returns")}
+            
+            # Columns to add
+            cols_to_add = {
+                "document_type": "ALTER TABLE purchase_returns ADD COLUMN document_type VARCHAR NULL",
+                "document_nature": "ALTER TABLE purchase_returns ADD COLUMN document_nature VARCHAR NULL",
+                "document_series": "ALTER TABLE purchase_returns ADD COLUMN document_series VARCHAR NULL"
+            }
+            
+            for col, sql in cols_to_add.items():
+                if col not in cols:
+                    conn.execute(text(sql))
+
+        conn.commit()
+
+try:
+    _migrate_v32()
+except Exception as e:
+    print(f"[startup] v32 migration skipped: {e}")
+
+
+def _migrate_v33() -> None:
+    from sqlalchemy import inspect, text
+
+    with engine.connect() as conn:
+        inspector = inspect(engine)
+
+        if "purchase_returns" in inspector.get_table_names():
+            cols = {c["name"]: c for c in inspector.get_columns("purchase_returns")}
+            
+            # Columns to add
+            cols_to_add = {
+                "pre_gst": "ALTER TABLE purchase_returns ADD COLUMN pre_gst VARCHAR NOT NULL DEFAULT 'N'",
+                "reason_for_issuing_document": "ALTER TABLE purchase_returns ADD COLUMN reason_for_issuing_document VARCHAR NOT NULL DEFAULT 'Purchase return'",
+                "note_refund_voucher_value": "ALTER TABLE purchase_returns ADD COLUMN note_refund_voucher_value DOUBLE PRECISION NOT NULL DEFAULT 0.0",
+                "rate": "ALTER TABLE purchase_returns ADD COLUMN rate DOUBLE PRECISION NOT NULL DEFAULT 0.0",
+                "eligibility_for_itc": "ALTER TABLE purchase_returns ADD COLUMN eligibility_for_itc VARCHAR NOT NULL DEFAULT 'Inputs'",
+                "availed_itc_integrated_tax": "ALTER TABLE purchase_returns ADD COLUMN availed_itc_integrated_tax DOUBLE PRECISION NOT NULL DEFAULT 0.0",
+                "availed_itc_central_tax": "ALTER TABLE purchase_returns ADD COLUMN availed_itc_central_tax DOUBLE PRECISION NOT NULL DEFAULT 0.0",
+                "availed_itc_state_tax": "ALTER TABLE purchase_returns ADD COLUMN availed_itc_state_tax DOUBLE PRECISION NOT NULL DEFAULT 0.0",
+                "availed_itc_cess": "ALTER TABLE purchase_returns ADD COLUMN availed_itc_cess DOUBLE PRECISION NOT NULL DEFAULT 0.0",
+                "invoice_type": "ALTER TABLE purchase_returns ADD COLUMN invoice_type VARCHAR NOT NULL DEFAULT 'Regular'",
+                "place_of_supply_code": "ALTER TABLE purchase_returns ADD COLUMN place_of_supply_code VARCHAR NOT NULL DEFAULT ''"
+            }
+            
+            for col, sql in cols_to_add.items():
+                if col not in cols:
+                    conn.execute(text(sql))
+
+        conn.commit()
+
+try:
+    _migrate_v33()
+except Exception as e:
+    print(f"[startup] v33 migration skipped: {e}")
+
+
 # Routers
 app.include_router(auth_routes.router)
 app.include_router(product_routes.router)
@@ -220,6 +526,7 @@ app.include_router(purchase_return_router)
 app.include_router(scrap_router)
 app.include_router(gst_sales_invoice_router)
 app.include_router(purchase_batch_router)
+app.include_router(credit_note_router)
 # Units
 from app.schemas.product_schema import UnitListResponse
 

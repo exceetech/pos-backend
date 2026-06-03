@@ -34,5 +34,8 @@ __all__ = [
     "GstSalesInvoiceItem",
     "PurchaseReturn",
     "Scrap",
+    "CreditNote",
+    "CreditNoteItem",
 ]
 from .purchase_batch import PurchaseBatch  # noqa: F401
+from .credit_note import CreditNote, CreditNoteItem  # noqa: F401

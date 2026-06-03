@@ -36,4 +36,16 @@ class Purchase(Base):
     is_credit = Column(Integer, nullable=False, default=0)
     credit_account_id = Column(Integer, ForeignKey("credit_accounts.id"), nullable=True)
 
+    local_id = Column(Integer, nullable=True, index=True)
+    place_of_supply_code = Column(String, nullable=False, default="")
+    reverse_charge = Column(String, nullable=False, default="N")
+    invoice_type = Column(String, nullable=False, default="Regular")
+    supply_type = Column(String, nullable=False, default="intrastate")
+    cess_paid = Column(Float, nullable=False, default=0.0)
+    eligibility_for_itc = Column(String, nullable=False, default="Inputs")
+    availed_itc_integrated_tax = Column(Float, nullable=False, default=0.0)
+    availed_itc_central_tax = Column(Float, nullable=False, default=0.0)
+    availed_itc_state_tax = Column(Float, nullable=False, default=0.0)
+    availed_itc_cess = Column(Float, nullable=False, default=0.0)
+
     created_at = Column(DateTime, default=datetime.utcnow)

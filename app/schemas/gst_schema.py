@@ -70,6 +70,16 @@ class GstSalesRecordCreate(BaseModel):
     gstr_invoice_type: str = "Regular"
     ecommerce_gstin: Optional[str] = None
     ecommerce_operator_name: Optional[str] = None
+
+    # New ECO fields (Table 14/15)
+    eco_nature_of_supply: Optional[str] = None
+    eco_document_type: Optional[str] = None
+    eco_supplier_gstin: Optional[str] = None
+    eco_supplier_name: Optional[str] = None
+    eco_recipient_gstin: Optional[str] = None
+    eco_recipient_name: Optional[str] = None
+    eco_role: Optional[str] = None
+
     cess_rate: float = 0.0
     cess_amount: float = 0.0
     uqc: Optional[str] = None

@@ -55,29 +55,142 @@ def sync_purchases(
 
     try:
         for p in payload.purchases:
-            # ✅ Create purchase header
-            purchase = Purchase(
-                shop_id=current_shop.id,
-                invoice_number=p.invoice_number,
-                supplier_gstin=p.supplier_gstin,
-                supplier_name=p.supplier_name,
-                state=p.state,
-                taxable_amount=p.taxable_amount,
-                cgst_percentage=p.cgst_percentage,
-                sgst_percentage=p.sgst_percentage,
-                igst_percentage=p.igst_percentage,
-                cgst_amount=p.cgst_amount,
-                sgst_amount=p.sgst_amount,
-                igst_amount=p.igst_amount,
-                invoice_value=p.invoice_value,
-                invoice_date=(
+            # Backend validation
+            if not p.place_of_supply_code:
+                return JSONResponse(status_code=400, content={"message": "place_of_supply_code is required"})
+            if p.reverse_charge not in ["Y", "N"]:
+                return JSONResponse(status_code=400, content={"message": "reverse_charge must be Y or N"})
+            if not p.invoice_type:
+                return JSONResponse(status_code=400, content={"message": "invoice_type is required"})
+            if p.supply_type not in ["intrastate", "interstate"]:
+                return JSONResponse(status_code=400, content={"message": "supply_type must be intrastate or interstate"})
+            if p.cess_paid < 0:
+                return JSONResponse(status_code=400, content={"message": "cess_paid must be >= 0"})
+            if not p.eligibility_for_itc:
+                return JSONResponse(status_code=400, content={"message": "eligibility_for_itc is required"})
+            if (p.availed_itc_integrated_tax < 0 or p.availed_itc_central_tax < 0 or
+                    p.availed_itc_state_tax < 0 or p.availed_itc_cess < 0):
+                return JSONResponse(status_code=400, content={"message": "availed ITC fields must be >= 0"})
+
+            if p.availed_itc_integrated_tax > p.igst_amount:
+                return JSONResponse(status_code=400, content={"message": "availed_itc_integrated_tax cannot exceed igst_amount"})
+            if p.availed_itc_central_tax > p.cgst_amount:
+                return JSONResponse(status_code=400, content={"message": "availed_itc_central_tax cannot exceed cgst_amount"})
+            if p.availed_itc_state_tax > p.sgst_amount:
+                return JSONResponse(status_code=400, content={"message": "availed_itc_state_tax cannot exceed sgst_amount"})
+            if p.availed_itc_cess > p.cess_paid:
+                return JSONResponse(status_code=400, content={"message": "availed_itc_cess cannot exceed cess_paid"})
+
+            if p.eligibility_for_itc in ["Ineligible", "None"]:
+                if (p.availed_itc_integrated_tax != 0 or p.availed_itc_central_tax != 0 or
+                        p.availed_itc_state_tax != 0 or p.availed_itc_cess != 0):
+                    return JSONResponse(status_code=400, content={"message": "availed ITC fields must be 0 when ineligible/None"})
+
+            # Item-level validation
+            for item in p.items:
+                if item.cess_percentage < 0:
+                    return JSONResponse(status_code=400, content={"message": "item cess_percentage must be >= 0"})
+                if item.cess_amount < 0:
+                    return JSONResponse(status_code=400, content={"message": "item cess_amount must be >= 0"})
+                if not item.eligibility_for_itc:
+                    return JSONResponse(status_code=400, content={"message": "item eligibility_for_itc is required"})
+                if (item.availed_itc_igst < 0 or item.availed_itc_cgst < 0 or
+                        item.availed_itc_sgst < 0 or item.availed_itc_cess < 0):
+                    return JSONResponse(status_code=400, content={"message": "item availed ITC fields must be >= 0"})
+
+                if item.availed_itc_igst > item.purchase_igst_amount:
+                    return JSONResponse(status_code=400, content={"message": "item availed_itc_igst cannot exceed purchase_igst_amount"})
+                if item.availed_itc_cgst > item.purchase_cgst_amount:
+                    return JSONResponse(status_code=400, content={"message": "item availed_itc_cgst cannot exceed purchase_cgst_amount"})
+                if item.availed_itc_sgst > item.purchase_sgst_amount:
+                    return JSONResponse(status_code=400, content={"message": "item availed_itc_sgst cannot exceed purchase_sgst_amount"})
+                if item.availed_itc_cess > item.cess_amount:
+                    return JSONResponse(status_code=400, content={"message": "item availed_itc_cess cannot exceed cess_amount"})
+
+                if item.eligibility_for_itc in ["Ineligible", "None"]:
+                    if (item.availed_itc_igst != 0 or item.availed_itc_cgst != 0 or
+                            item.availed_itc_sgst != 0 or item.availed_itc_cess != 0):
+                        return JSONResponse(status_code=400, content={"message": "item availed ITC fields must be 0 when ineligible/None"})
+
+                if item.hsn_code and not item.official_uqc:
+                    return JSONResponse(status_code=400, content={"message": "item official_uqc is required when hsn_code is present"})
+
+            # Check if purchase already exists for this shop by local_id
+            existing = db.query(Purchase).filter(
+                Purchase.shop_id == current_shop.id,
+                Purchase.local_id == p.local_id
+            ).first()
+
+            if existing is not None:
+                purchase = existing
+                purchase.invoice_number = p.invoice_number
+                purchase.supplier_gstin = p.supplier_gstin
+                purchase.supplier_name = p.supplier_name
+                purchase.state = p.state
+                purchase.taxable_amount = p.taxable_amount
+                purchase.cgst_percentage = p.cgst_percentage
+                purchase.sgst_percentage = p.sgst_percentage
+                purchase.igst_percentage = p.igst_percentage
+                purchase.cgst_amount = p.cgst_amount
+                purchase.sgst_amount = p.sgst_amount
+                purchase.igst_amount = p.igst_amount
+                purchase.invoice_value = p.invoice_value
+                purchase.invoice_date = (
                     datetime.utcfromtimestamp(p.invoice_date / 1000)
                     if p.invoice_date else None
-                ),
-                is_credit=1 if p.is_credit else 0,
-                credit_account_id=p.credit_account_id,
-                created_at=datetime.utcfromtimestamp(p.created_at / 1000)
-            )
+                )
+                purchase.is_credit = 1 if p.is_credit else 0
+                purchase.credit_account_id = p.credit_account_id
+                purchase.place_of_supply_code = p.place_of_supply_code
+                purchase.reverse_charge = p.reverse_charge
+                purchase.invoice_type = p.invoice_type
+                purchase.supply_type = p.supply_type
+                purchase.cess_paid = p.cess_paid
+                purchase.eligibility_for_itc = p.eligibility_for_itc
+                purchase.availed_itc_integrated_tax = p.availed_itc_integrated_tax
+                purchase.availed_itc_central_tax = p.availed_itc_central_tax
+                purchase.availed_itc_state_tax = p.availed_itc_state_tax
+                purchase.availed_itc_cess = p.availed_itc_cess
+
+                # Delete items and batches
+                db.query(PurchaseItem).filter(PurchaseItem.purchase_id == purchase.id).delete()
+                db.query(PurchaseBatch).filter(PurchaseBatch.purchase_invoice_id == purchase.id).delete()
+            else:
+                # ✅ Create purchase header
+                purchase = Purchase(
+                    shop_id=current_shop.id,
+                    local_id=p.local_id,
+                    invoice_number=p.invoice_number,
+                    supplier_gstin=p.supplier_gstin,
+                    supplier_name=p.supplier_name,
+                    state=p.state,
+                    taxable_amount=p.taxable_amount,
+                    cgst_percentage=p.cgst_percentage,
+                    sgst_percentage=p.sgst_percentage,
+                    igst_percentage=p.igst_percentage,
+                    cgst_amount=p.cgst_amount,
+                    sgst_amount=p.sgst_amount,
+                    igst_amount=p.igst_amount,
+                    invoice_value=p.invoice_value,
+                    invoice_date=(
+                        datetime.utcfromtimestamp(p.invoice_date / 1000)
+                        if p.invoice_date else None
+                    ),
+                    is_credit=1 if p.is_credit else 0,
+                    credit_account_id=p.credit_account_id,
+                    place_of_supply_code=p.place_of_supply_code,
+                    reverse_charge=p.reverse_charge,
+                    invoice_type=p.invoice_type,
+                    supply_type=p.supply_type,
+                    cess_paid=p.cess_paid,
+                    eligibility_for_itc=p.eligibility_for_itc,
+                    availed_itc_integrated_tax=p.availed_itc_integrated_tax,
+                    availed_itc_central_tax=p.availed_itc_central_tax,
+                    availed_itc_state_tax=p.availed_itc_state_tax,
+                    availed_itc_cess=p.availed_itc_cess,
+                    created_at=datetime.utcfromtimestamp(p.created_at / 1000)
+                )
+                db.add(purchase)
 
             # ✅ Validation: Ensure credit account exists and belongs to this shop
             if purchase.credit_account_id and purchase.credit_account_id > 0:
@@ -91,11 +204,11 @@ def sync_purchases(
                         content={"message": f"Credit account {purchase.credit_account_id} not found for this shop"}
                     )
 
-            db.add(purchase)
             db.flush()
 
             # ✅ Insert items
             for item in p.items:
+                hsn_desc = item.hsn_description if item.hsn_description else item.product_name
                 db.add(
                     PurchaseItem(
                         purchase_id=purchase.id,
@@ -117,6 +230,15 @@ def sync_purchases(
                         sales_cgst_percentage=item.sales_cgst_percentage,
                         sales_sgst_percentage=item.sales_sgst_percentage,
                         sales_igst_percentage=item.sales_igst_percentage,
+                        cess_percentage=item.cess_percentage,
+                        cess_amount=item.cess_amount,
+                        eligibility_for_itc=item.eligibility_for_itc,
+                        availed_itc_igst=item.availed_itc_igst,
+                        availed_itc_cgst=item.availed_itc_cgst,
+                        availed_itc_sgst=item.availed_itc_sgst,
+                        availed_itc_cess=item.availed_itc_cess,
+                        hsn_description=hsn_desc,
+                        official_uqc=item.official_uqc or ""
                     )
                 )
 

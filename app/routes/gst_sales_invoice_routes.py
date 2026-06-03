@@ -72,6 +72,20 @@ def _to_invoice(payload: CreateGstSalesInvoice, shop_id: int) -> GstSalesInvoice
         customer_state_code      = payload.customer_state_code,
         ecommerce_gstin          = payload.ecommerce_gstin,
         ecommerce_operator_name  = payload.ecommerce_operator_name,
+        # ── New ECO fields (Table 14/15) ──
+        eco_nature_of_supply     = payload.eco_nature_of_supply,
+        eco_document_type        = payload.eco_document_type,
+        eco_supplier_gstin       = payload.eco_supplier_gstin,
+        eco_supplier_name        = payload.eco_supplier_name,
+        eco_recipient_gstin      = payload.eco_recipient_gstin,
+        eco_recipient_name       = payload.eco_recipient_name,
+        eco_role                 = payload.eco_role,
+
+        # ── GSTR-1 DOCS fields ──
+        document_type            = payload.document_type,
+        document_nature          = payload.document_nature,
+        document_series          = payload.document_series,
+
         is_cancelled             = payload.is_cancelled,
         cancelled_at             = _epoch_ms_to_dt(payload.cancelled_at) if payload.cancelled_at else None,
     )
@@ -97,6 +111,7 @@ def _to_invoice(payload: CreateGstSalesInvoice, shop_id: int) -> GstSalesInvoice
                 cess_amount           = item.cess_amount,
                 uqc                   = item.uqc,
                 hsn_description       = item.hsn_description,
+                supply_classification = item.supply_classification,
             )
         )
     return invoice
@@ -182,6 +197,20 @@ def sync_gst_sales_invoices(
                 existing.customer_state_code     = inv_dto.customer_state_code
                 existing.ecommerce_gstin         = inv_dto.ecommerce_gstin
                 existing.ecommerce_operator_name = inv_dto.ecommerce_operator_name
+                # ── New ECO fields (Table 14/15) ──
+                existing.eco_nature_of_supply    = inv_dto.eco_nature_of_supply
+                existing.eco_document_type       = inv_dto.eco_document_type
+                existing.eco_supplier_gstin      = inv_dto.eco_supplier_gstin
+                existing.eco_supplier_name       = inv_dto.eco_supplier_name
+                existing.eco_recipient_gstin     = inv_dto.eco_recipient_gstin
+                existing.eco_recipient_name      = inv_dto.eco_recipient_name
+                existing.eco_role                = inv_dto.eco_role
+
+                # ── GSTR-1 DOCS fields ──
+                existing.document_type           = inv_dto.document_type
+                existing.document_nature         = inv_dto.document_nature
+                existing.document_series         = inv_dto.document_series
+
                 existing.is_cancelled            = inv_dto.is_cancelled
                 if inv_dto.cancelled_at:
                     existing.cancelled_at = _epoch_ms_to_dt(inv_dto.cancelled_at)
@@ -212,6 +241,7 @@ def sync_gst_sales_invoices(
                             cess_amount           = item.cess_amount,
                             uqc                   = item.uqc,
                             hsn_description       = item.hsn_description,
+                            supply_classification = item.supply_classification,
                         )
                     )
                 db.flush()

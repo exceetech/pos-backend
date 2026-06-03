@@ -67,6 +67,15 @@ class GstSalesRecord(Base):
     ecommerce_gstin        = Column(String, nullable=True)
     ecommerce_operator_name = Column(String, nullable=True)
 
+    # New ECO fields (Table 14/15)
+    eco_nature_of_supply    = Column(String, nullable=True)
+    eco_document_type       = Column(String, nullable=True)
+    eco_supplier_gstin      = Column(String, nullable=True)
+    eco_supplier_name       = Column(String, nullable=True)
+    eco_recipient_gstin     = Column(String, nullable=True)
+    eco_recipient_name      = Column(String, nullable=True)
+    eco_role                = Column(String, nullable=True)
+
     # Item-level GSTR-1 product master fields.
     cess_rate       = Column(Float, nullable=False, default=0.0)
     cess_amount     = Column(Float, nullable=False, default=0.0)

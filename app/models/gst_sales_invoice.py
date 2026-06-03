@@ -87,6 +87,20 @@ class GstSalesInvoice(Base):
     # E-Commerce Operator Name.
     ecommerce_operator_name = Column(String, nullable=True)
 
+    # ── New ECO fields (Table 14/15) ──
+    eco_nature_of_supply    = Column(String, nullable=True)
+    eco_document_type       = Column(String, nullable=True)
+    eco_supplier_gstin      = Column(String, nullable=True)
+    eco_supplier_name       = Column(String, nullable=True)
+    eco_recipient_gstin     = Column(String, nullable=True)
+    eco_recipient_name      = Column(String, nullable=True)
+    eco_role                = Column(String, nullable=True)
+
+    # ── GSTR-1 DOCS fields ──
+    document_type           = Column(String, nullable=True)
+    document_nature         = Column(String, nullable=True)
+    document_series         = Column(String, nullable=True)
+
     # Soft cancellation — NEVER hard-delete, set this flag instead.
     is_cancelled = Column(Boolean, nullable=False, default=False)
     cancelled_at = Column(DateTime, nullable=True)
@@ -135,6 +149,7 @@ class GstSalesInvoiceItem(Base):
     cess_amount = Column(Float, nullable=False, default=0.0)
     uqc         = Column(String, nullable=True)          # GST Unit Quantity Code
     hsn_description = Column(String, nullable=True)       # product description for HSN summary
+    supply_classification = Column(String, nullable=False, default="TAXABLE") # TAXABLE, NIL_RATED, EXEMPT, NON_GST
 
     invoice = relationship("GstSalesInvoice", back_populates="items")
 
