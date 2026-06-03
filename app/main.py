@@ -234,7 +234,6 @@ def _migrate_v25() -> None:
     CreditNote.__table__.create(bind=engine, checkfirst=True)
     CreditNoteItem.__table__.create(bind=engine, checkfirst=True)
 
-    # ── 2. Add debit-note columns to purchase_returns ────────────────────
     new_cols = [
         ("note_number",             "note_number VARCHAR NULL"),
         ("note_date",               "note_date BIGINT NULL"),
