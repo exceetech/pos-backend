@@ -47,3 +47,4 @@ class PurchaseItem(Base):
     availed_itc_cess = Column(Float, nullable=False, default=0.0)
     hsn_description = Column(String, nullable=False, default="")
     official_uqc = Column(String, nullable=False, default="")
+    supply_classification = Column(String, nullable=False, default="TAXABLE")

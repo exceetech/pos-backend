@@ -47,5 +47,6 @@ class Purchase(Base):
     availed_itc_central_tax = Column(Float, nullable=False, default=0.0)
     availed_itc_state_tax = Column(Float, nullable=False, default=0.0)
     availed_itc_cess = Column(Float, nullable=False, default=0.0)
+    purchase_source = Column(String, nullable=False, default="DOMESTIC")
 
     created_at = Column(DateTime, default=datetime.utcnow)

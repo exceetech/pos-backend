@@ -1,4 +1,4 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from typing import Optional, List
 from datetime import datetime
 
@@ -179,29 +179,154 @@ class Gstr1Response(BaseModel):
 # GSTR-2 (Inward Supplies / Purchases)
 # ============================================================
 
-class Gstr2Item(BaseModel):
-    supplier_gstin: Optional[str]
+class Gstr2B2bItem(BaseModel):
+    supplier_gstin: str
     invoice_number: str
     invoice_date: str
-    expense_type: str
-    hsn_sac_code: str
-    description: str
+    invoice_value: float
+    place_of_supply: str
+    reverse_charge: str
+    invoice_type: str
+    rate: float
     taxable_value: float
-    gst_rate: float
+    igst: float
     cgst: float
     sgst: float
-    igst: float
-    total: float
+    cess: float
+    itc_eligibility: str
+    availed_itc_igst: float
+    availed_itc_cgst: float
+    availed_itc_sgst: float
+    availed_itc_cess: float
 
+class Gstr2B2burItem(BaseModel):
+    supplier_name: str
+    invoice_number: str
+    invoice_date: str
+    invoice_value: float
+    place_of_supply: str
+    supply_type: str
+    rate: float
+    taxable_value: float
+    igst: float
+    cgst: float
+    sgst: float
+    cess: float
+    itc_eligibility: str
+    availed_itc_igst: float
+    availed_itc_cgst: float
+    availed_itc_sgst: float
+    availed_itc_cess: float
+
+class Gstr2ImpsItem(BaseModel):
+    invoice_number: str
+    invoice_date: str
+    invoice_value: float
+    place_of_supply: str
+    rate: float
+    taxable_value: float
+    igst: float
+    cess: float
+    itc_eligibility: str
+    availed_itc_igst: float
+    availed_itc_cess: float
+
+class Gstr2ImpgItem(BaseModel):
+    port_code: str
+    bill_of_entry_number: str
+    bill_of_entry_date: str
+    bill_of_entry_value: float
+    document_type: str
+    sez_supplier_gstin: str
+    rate: float
+    taxable_value: float
+    igst: float
+    cess: float
+    itc_eligibility: str
+    availed_itc_igst: float
+    availed_itc_cess: float
+
+class Gstr2CdnrItem(BaseModel):
+    supplier_gstin: str
+    note_number: str
+    note_date: str
+    invoice_number: str
+    invoice_date: str
+    pre_gst: str
+    document_type: str
+    reason: str
+    supply_type: str
+    note_value: float
+    rate: float
+    taxable_value: float
+    igst: float
+    cgst: float
+    sgst: float
+    cess: float
+    itc_eligibility: str
+    availed_itc_igst: float
+    availed_itc_cgst: float
+    availed_itc_sgst: float
+    availed_itc_cess: float
+
+class Gstr2CdnurItem(BaseModel):
+    note_number: str
+    note_date: str
+    invoice_number: str
+    invoice_date: str
+    pre_gst: str
+    document_type: str
+    reason: str
+    supply_type: str
+    invoice_type: str
+    note_value: float
+    rate: float
+    taxable_value: float
+    igst: float
+    cgst: float
+    sgst: float
+    cess: float
+    itc_eligibility: str
+    availed_itc_igst: float
+    availed_itc_cgst: float
+    availed_itc_sgst: float
+    availed_itc_cess: float
+
+class Gstr2ExempItem(BaseModel):
+    description: str
+    composition: float
+    nil_rated: float
+    exempted: float
+    non_gst: float
+
+class Gstr2HsnsumItem(BaseModel):
+    hsn: str
+    description: str
+    uqc: str
+    total_quantity: float
+    total_value: float
+    taxable_value: float
+    igst: float
+    cgst: float
+    sgst: float
+    cess: float
 
 class Gstr2Response(BaseModel):
     period_start: str
     period_end: str
-    records: List[Gstr2Item]
+    b2b: List[Gstr2B2bItem] = []
+    b2bur: List[Gstr2B2burItem] = []
+    imps: List[Gstr2ImpsItem] = []
+    impg: List[Gstr2ImpgItem] = []
+    cdnr: List[Gstr2CdnrItem] = []
+    cdnur: List[Gstr2CdnurItem] = []
+    exemp: List[Gstr2ExempItem] = []
+    hsnsum: List[Gstr2HsnsumItem] = []
     total_taxable_value: float
     total_itc_cgst: float
     total_itc_sgst: float
     total_itc_igst: float
+
 
 
 # ============================================================

@@ -15,11 +15,17 @@ from app.dependencies import get_current_shop
 from app.models.gst_profile import StoreGstProfile
 from app.models.gst_sales_record import GstSalesRecord
 from app.models.gst_purchase_record import GstPurchaseRecord
+from app.models.purchase import Purchase
+from app.models.purchase_item import PurchaseItem
+from app.models.import_service import ImportService
+from app.models.purchase_import_details import PurchaseImportDetails
+from app.models.purchase_return import PurchaseReturn
 from app.schemas.gst_schema import (
     GstProfileUpsert, GstProfileResponse,
     GstSalesSyncRequest, GstPurchaseSyncRequest,
     Gstr1Response, Gstr1B2BInvoice, Gstr1B2CItem,
-    Gstr2Response, Gstr2Item,
+    Gstr2Response, Gstr2B2bItem, Gstr2B2burItem, Gstr2ImpsItem, Gstr2ImpgItem,
+    Gstr2CdnrItem, Gstr2CdnurItem, Gstr2ExempItem, Gstr2HsnsumItem,
     Gstr3BResponse, Gstr3BSupplyDetail,
     HsnSummaryItem
 )
@@ -486,40 +492,253 @@ def get_gstr2(
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid date format. Use YYYY-MM-DD")
 
-    records = db.query(GstPurchaseRecord).filter(
-        GstPurchaseRecord.shop_id == current_shop.id,
-        GstPurchaseRecord.invoice_date >= start,
-        GstPurchaseRecord.invoice_date <= end
+    purchases_query = db.query(Purchase, PurchaseItem).join(
+        PurchaseItem, Purchase.id == PurchaseItem.purchase_id
+    ).filter(
+        Purchase.shop_id == current_shop.id,
+        Purchase.invoice_date >= start,
+        Purchase.invoice_date <= end
     ).all()
 
-    items = [
-        Gstr2Item(
-            supplier_gstin=r.supplier_gstin,
-            invoice_number=r.invoice_number,
-            invoice_date=r.invoice_date.strftime("%d-%m-%Y"),
-            expense_type=r.expense_type,
-            hsn_sac_code=r.hsn_sac_code,
-            description=r.description or "",
-            taxable_value=r.taxable_value,
-            gst_rate=r.gst_rate,
-            cgst=r.cgst_amount,
-            sgst=r.sgst_amount,
-            igst=r.igst_amount,
-            total=r.total_amount
-        )
-        for r in records
-    ]
+    imports_query = db.query(ImportService).filter(
+        ImportService.shop_id == current_shop.id,
+        ImportService.invoice_date >= start,
+        ImportService.invoice_date <= end
+    ).all()
+
+    returns_query = db.query(PurchaseReturn).filter(
+        PurchaseReturn.shop_id == current_shop.id,
+        PurchaseReturn.created_at >= start,
+        PurchaseReturn.created_at <= end
+    ).all()
+
+    import_goods_query = db.query(Purchase, PurchaseItem, PurchaseImportDetails).join(
+        PurchaseItem, Purchase.id == PurchaseItem.purchase_id
+    ).join(
+        PurchaseImportDetails, Purchase.id == PurchaseImportDetails.purchase_id
+    ).filter(
+        Purchase.shop_id == current_shop.id,
+        Purchase.invoice_date >= start,
+        Purchase.invoice_date <= end
+    ).all()
+
+    b2b_list = []
+    b2bur_list = []
+    imps_list = []
+    impg_list = []
+    cdnr_list = []
+    cdnur_list = []
+    exemp_list = []
+    hsn_map = {}
+
+    total_taxable_value = 0.0
+    total_itc_cgst = 0.0
+    total_itc_sgst = 0.0
+    total_itc_igst = 0.0
+
+    comp = 0.0
+    nil = 0.0
+    exe = 0.0
+    ngst = 0.0
+
+    # 1. B2B, B2BUR, EXEMP, HSN SUM
+    for p, item in purchases_query:
+        is_registered = bool(p.supplier_gstin and p.supplier_gstin.strip() != "")
+        date_str = p.invoice_date.strftime("%d-%b-%y") if p.invoice_date else ""
+        rate = item.purchase_cgst_percentage + item.purchase_sgst_percentage + item.purchase_igst_percentage
+
+        # HSN
+        hsn = item.hsn_code or "Unknown"
+        if hsn not in hsn_map:
+            hsn_map[hsn] = Gstr2HsnsumItem(
+                hsn=hsn, description=item.product_name or "", uqc="OTH",
+                total_quantity=0.0, total_value=0.0, taxable_value=0.0, 
+                igst=0.0, cgst=0.0, sgst=0.0, cess=0.0
+            )
+        hsn_map[hsn].total_quantity += item.quantity
+        hsn_map[hsn].total_value += item.invoice_value
+        hsn_map[hsn].taxable_value += item.taxable_amount
+        hsn_map[hsn].igst += item.purchase_igst_amount
+        hsn_map[hsn].cgst += item.purchase_cgst_amount
+        hsn_map[hsn].sgst += item.purchase_sgst_amount
+        hsn_map[hsn].cess += item.cess_amount
+
+        # Exempt tracking
+        if p.invoice_type == "From Composition Taxable Person":
+            comp += item.taxable_amount
+        elif item.supply_classification == "NIL_RATED":
+            nil += item.taxable_amount
+        elif item.supply_classification == "EXEMPT":
+            exe += item.taxable_amount
+        elif item.supply_classification == "NON_GST":
+            ngst += item.taxable_amount
+        else:
+            if is_registered:
+                b2b_list.append(Gstr2B2bItem(
+                    supplier_gstin=p.supplier_gstin,
+                    invoice_number=p.invoice_number,
+                    invoice_date=date_str,
+                    invoice_value=item.invoice_value,
+                    place_of_supply=p.place_of_supply_code or "",
+                    reverse_charge="Y" if p.reverse_charge else "N",
+                    invoice_type=p.invoice_type or "Regular",
+                    rate=rate,
+                    taxable_value=item.taxable_amount,
+                    igst=item.purchase_igst_amount,
+                    cgst=item.purchase_cgst_amount,
+                    sgst=item.purchase_sgst_amount,
+                    cess=item.cess_amount,
+                    itc_eligibility="Inputs",
+                    availed_itc_igst=item.availed_itc_igst,
+                    availed_itc_cgst=item.availed_itc_cgst,
+                    availed_itc_sgst=item.availed_itc_sgst,
+                    availed_itc_cess=item.availed_itc_cess
+                ))
+            else:
+                b2bur_list.append(Gstr2B2burItem(
+                    supplier_name=p.supplier_name or "Unknown",
+                    invoice_number=p.invoice_number,
+                    invoice_date=date_str,
+                    invoice_value=item.invoice_value,
+                    place_of_supply=p.place_of_supply_code or "",
+                    supply_type=p.supply_type or "",
+                    rate=rate,
+                    taxable_value=item.taxable_amount,
+                    igst=item.purchase_igst_amount,
+                    cgst=item.purchase_cgst_amount,
+                    sgst=item.purchase_sgst_amount,
+                    cess=item.cess_amount,
+                    itc_eligibility="Inputs",
+                    availed_itc_igst=item.availed_itc_igst,
+                    availed_itc_cgst=item.availed_itc_cgst,
+                    availed_itc_sgst=item.availed_itc_sgst,
+                    availed_itc_cess=item.availed_itc_cess
+                ))
+
+            total_taxable_value += item.taxable_amount
+            total_itc_cgst += item.availed_itc_cgst
+            total_itc_sgst += item.availed_itc_sgst
+            total_itc_igst += item.availed_itc_igst
+
+    # 2. IMPG
+    for p, item, p_imp in import_goods_query:
+        boe_date_str = p_imp.bill_of_entry_date.strftime("%d-%b-%y") if p_imp.bill_of_entry_date else ""
+        rate = item.purchase_cgst_percentage + item.purchase_sgst_percentage + item.purchase_igst_percentage
+        impg_list.append(Gstr2ImpgItem(
+            port_code=p_imp.port_code,
+            bill_of_entry_number=p_imp.bill_of_entry_number,
+            bill_of_entry_date=boe_date_str,
+            bill_of_entry_value=p_imp.bill_of_entry_value,
+            document_type=p_imp.document_type,
+            sez_supplier_gstin=p_imp.sez_supplier_gstin or "",
+            rate=rate,
+            taxable_value=item.taxable_amount,
+            igst=item.purchase_igst_amount,
+            cess=item.cess_amount,
+            itc_eligibility="Inputs",
+            availed_itc_igst=item.availed_itc_igst,
+            availed_itc_cess=item.availed_itc_cess
+        ))
+
+    # 3. IMPS
+    for im in imports_query:
+        date_str = im.invoice_date.strftime("%d-%b-%y") if im.invoice_date else ""
+        imps_list.append(Gstr2ImpsItem(
+            invoice_number=im.invoice_number,
+            invoice_date=date_str,
+            invoice_value=im.invoice_value,
+            place_of_supply=im.place_of_supply or "",
+            rate=im.rate,
+            taxable_value=im.taxable_value,
+            igst=im.igst_paid,
+            cess=im.cess_paid,
+            itc_eligibility=im.eligibility_for_itc or "Inputs",
+            availed_itc_igst=im.availed_itc_igst,
+            availed_itc_cess=im.availed_itc_cess
+        ))
+        total_taxable_value += im.taxable_value
+        total_itc_igst += im.availed_itc_igst
+
+    # 4. CDNR & CDNUR
+    for r in returns_query:
+        is_registered = bool(r.supplier_gstin and r.supplier_gstin.strip() != "")
+        note_date_str = datetime.fromtimestamp(r.note_date / 1000).strftime("%d-%b-%y") if r.note_date else ""
+        orig_inv_date_str = datetime.fromtimestamp(r.original_invoice_date / 1000).strftime("%d-%b-%y") if r.original_invoice_date else ""
+
+        if is_registered:
+            cdnr_list.append(Gstr2CdnrItem(
+                supplier_gstin=r.supplier_gstin,
+                note_number=r.note_number or "",
+                note_date=note_date_str,
+                invoice_number=r.original_invoice_number or "",
+                invoice_date=orig_inv_date_str,
+                pre_gst=r.pre_gst or "N",
+                document_type=r.document_type or "C",
+                reason=r.reason_for_issuing_document or "Purchase return",
+                supply_type=r.supply_type or "",
+                note_value=r.note_refund_voucher_value,
+                rate=r.rate,
+                taxable_value=r.taxable_amount,
+                igst=r.igst_amount,
+                cgst=r.cgst_amount,
+                sgst=r.sgst_amount,
+                cess=r.cess_amount,
+                itc_eligibility=r.eligibility_for_itc or "Inputs",
+                availed_itc_igst=r.availed_itc_integrated_tax,
+                availed_itc_cgst=r.availed_itc_central_tax,
+                availed_itc_sgst=r.availed_itc_state_tax,
+                availed_itc_cess=r.availed_itc_cess
+            ))
+        else:
+            cdnur_list.append(Gstr2CdnurItem(
+                note_number=r.note_number or "",
+                note_date=note_date_str,
+                invoice_number=r.original_invoice_number or "",
+                invoice_date=orig_inv_date_str,
+                pre_gst=r.pre_gst or "N",
+                document_type=r.document_type or "C",
+                reason=r.reason_for_issuing_document or "Purchase return",
+                supply_type=r.supply_type or "",
+                invoice_type=r.invoice_type or "Regular",
+                note_value=r.note_refund_voucher_value,
+                rate=r.rate,
+                taxable_value=r.taxable_amount,
+                igst=r.igst_amount,
+                cgst=r.cgst_amount,
+                sgst=r.sgst_amount,
+                cess=r.cess_amount,
+                itc_eligibility=r.eligibility_for_itc or "Inputs",
+                availed_itc_igst=r.availed_itc_integrated_tax,
+                availed_itc_cgst=r.availed_itc_central_tax,
+                availed_itc_sgst=r.availed_itc_state_tax,
+                availed_itc_cess=r.availed_itc_cess
+            ))
+
+    if comp > 0 or nil > 0 or exe > 0 or ngst > 0:
+        exemp_list.append(Gstr2ExempItem(
+            description="Total",
+            composition=comp,
+            nil_rated=nil,
+            exempted=exe,
+            non_gst=ngst
+        ))
 
     return Gstr2Response(
         period_start=start_date,
         period_end=end_date,
-        records=items,
-        total_taxable_value=round(sum(r.taxable_value for r in records), 2),
-        total_itc_cgst=round(sum(r.cgst_amount for r in records), 2),
-        total_itc_sgst=round(sum(r.sgst_amount for r in records), 2),
-        total_itc_igst=round(sum(r.igst_amount for r in records), 2)
+        b2b=b2b_list,
+        b2bur=b2bur_list,
+        imps=imps_list,
+        impg=impg_list,
+        cdnr=cdnr_list,
+        cdnur=cdnur_list,
+        exemp=exemp_list,
+        hsnsum=list(hsn_map.values()),
+        total_taxable_value=round(total_taxable_value, 2),
+        total_itc_cgst=round(total_itc_cgst, 2),
+        total_itc_sgst=round(total_itc_sgst, 2),
+        total_itc_igst=round(total_itc_igst, 2)
     )
-
 
 # ============================================================
 # 8. GSTR-3B (Tax Liability Summary)

@@ -151,6 +151,7 @@ def sync_purchases(
                 purchase.availed_itc_central_tax = p.availed_itc_central_tax
                 purchase.availed_itc_state_tax = p.availed_itc_state_tax
                 purchase.availed_itc_cess = p.availed_itc_cess
+                purchase.purchase_source = p.purchase_source
 
                 # Delete items and batches
                 db.query(PurchaseItem).filter(PurchaseItem.purchase_id == purchase.id).delete()
@@ -188,6 +189,7 @@ def sync_purchases(
                     availed_itc_central_tax=p.availed_itc_central_tax,
                     availed_itc_state_tax=p.availed_itc_state_tax,
                     availed_itc_cess=p.availed_itc_cess,
+                    purchase_source=p.purchase_source,
                     created_at=datetime.utcfromtimestamp(p.created_at / 1000)
                 )
                 db.add(purchase)
@@ -238,7 +240,8 @@ def sync_purchases(
                         availed_itc_sgst=item.availed_itc_sgst,
                         availed_itc_cess=item.availed_itc_cess,
                         hsn_description=hsn_desc,
-                        official_uqc=item.official_uqc or ""
+                        official_uqc=item.official_uqc or "",
+                        supply_classification=item.supply_classification
                     )
                 )
 

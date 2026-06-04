@@ -503,6 +503,29 @@ except Exception as e:
     print(f"[startup] v33 migration skipped: {e}")
 
 
+def _migrate_v34() -> None:
+    from sqlalchemy import inspect, text
+
+    # Ensure purchase_import_details is created
+    from app.models.purchase_import_details import PurchaseImportDetails
+    PurchaseImportDetails.__table__.create(bind=engine, checkfirst=True)
+
+    with engine.connect() as conn:
+        inspector = inspect(engine)
+
+        if "purchases" in inspector.get_table_names():
+            cols = {c["name"]: c for c in inspector.get_columns("purchases")}
+            if "purchase_source" not in cols:
+                conn.execute(text("ALTER TABLE purchases ADD COLUMN purchase_source VARCHAR NOT NULL DEFAULT 'DOMESTIC'"))
+
+        conn.commit()
+
+try:
+    _migrate_v34()
+except Exception as e:
+    print(f"[startup] v34 migration skipped: {e}")
+
+
 # Routers
 app.include_router(auth_routes.router)
 app.include_router(product_routes.router)
@@ -526,6 +549,10 @@ app.include_router(scrap_router)
 app.include_router(gst_sales_invoice_router)
 app.include_router(purchase_batch_router)
 app.include_router(credit_note_router)
+from app.routes.purchase_import_details_routes import router as purchase_import_details_router
+app.include_router(purchase_import_details_router)
+from app.routes.import_service_routes import router as import_service_router
+app.include_router(import_service_router)
 # Units
 from app.schemas.product_schema import UnitListResponse
 

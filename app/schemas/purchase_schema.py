@@ -40,6 +40,7 @@ class PurchaseItemDto(BaseModel):
     availed_itc_cess: float = 0.0
     hsn_description: str = ""
     official_uqc: str = ""
+    supply_classification: str = "TAXABLE"
 
 
 class PurchaseDto(BaseModel):
@@ -77,6 +78,7 @@ class PurchaseDto(BaseModel):
     availed_itc_central_tax: float = 0.0
     availed_itc_state_tax: float = 0.0
     availed_itc_cess: float = 0.0
+    purchase_source: str = "DOMESTIC"
 
     items: List[PurchaseItemDto]
 
