@@ -20,13 +20,14 @@ class Shop(Base):
 
     password_hash = Column(String, nullable=True)
 
+    # Valid values: PENDING | ACTIVE | ARCHIVED
+    # IMPORTANT: default stays PENDING so OTP verification is not bypassed.
     status = Column(String, default="PENDING")
     is_first_login = Column(Boolean, default=True)
 
     created_at = Column(DateTime, default=datetime.utcnow)
 
     device_id = Column(String, nullable=True)
-
     fcm_token = Column(String, nullable=True)
 
     reset_otp_hash = Column(String, nullable=True)
@@ -34,3 +35,19 @@ class Shop(Base):
     reset_otp_attempts = Column(Integer, default=0)
 
     type = Column(String, default="general", nullable=False)
+
+    # ── Workspace Rotation fields ──────────────────────────────────────────────
+    # Preserved when a shop is archived so the original credentials can be
+    # restored without losing them to the "archived_{ts}_" prefix.
+    # Applied to DB via:
+    #   ALTER TABLE shops ADD COLUMN IF NOT EXISTS original_phone VARCHAR;
+    #   ALTER TABLE shops ADD COLUMN IF NOT EXISTS original_email VARCHAR;
+    original_phone = Column(String, nullable=True, index=True)
+    original_email = Column(String, nullable=True)
+
+    # Monotonically increasing per workspace rotation / restore.
+    # Embedded in JWT; get_current_shop() validates the JWT version matches DB.
+    # Applied to DB via:
+    #   ALTER TABLE shops ADD COLUMN IF NOT EXISTS workspace_version INTEGER DEFAULT 1;
+    #   UPDATE shops SET workspace_version = 1 WHERE workspace_version IS NULL;
+    workspace_version = Column(Integer, default=1, nullable=False)

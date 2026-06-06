@@ -90,6 +90,8 @@ def sync_inventory_logs(
             )
             db.add(inventory)
             db.flush() # 🔥 ensure subsequent logs in the same loop find this row
+        else:
+            inventory.is_active = True
 
         # =================================================
         # 🔥 APPLY LOGIC
@@ -130,9 +132,12 @@ def get_inventory(
     db: Session = Depends(get_db),
     current_shop = Depends(get_current_shop)
 ):
-    inventory = db.query(Inventory).filter(
+    inventory = db.query(Inventory).join(
+        ShopProduct,
+        Inventory.product_id == ShopProduct.id
+    ).filter(
         Inventory.shop_id == current_shop.id,
-        Inventory.is_active == True
+        ShopProduct.is_active == True
     ).all()
 
     response = []
@@ -142,6 +147,27 @@ def get_inventory(
             "product_id": item.product_id,
             "stock": float(item.current_stock or 0),
             "avg_cost": float(item.average_cost or 0),
-            "is_active": item.is_active
+            "is_active": True
         })
     return response
+
+
+@router.get("/logs")
+def get_inventory_logs(
+    db: Session = Depends(get_db),
+    current_shop = Depends(get_current_shop)
+):
+    logs = db.query(InventoryLog).filter(
+        InventoryLog.shop_id == current_shop.id
+    ).all()
+
+    return [
+        {
+            "product_id": log.product_id,
+            "type": log.type,
+            "quantity": log.quantity,
+            "price": log.price,
+            "date": int(log.created_at.timestamp() * 1000) if log.created_at else None
+        }
+        for log in logs
+    ]

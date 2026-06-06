@@ -3,74 +3,77 @@ from jose import JWTError, jwt
 from datetime import datetime, timedelta
 from fastapi import HTTPException, status
 
-# ================= PASSWORD =================
+# ── Password hashing ──────────────────────────────────────────────────────────
 
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
-def hash_password(password: str):
+
+def hash_password(password: str) -> str:
     return pwd_context.hash(password)
 
-def verify_password(plain_password: str, hashed_password: str):
+
+def verify_password(plain_password: str, hashed_password: str) -> bool:
     return pwd_context.verify(plain_password, hashed_password)
 
 
-# ================= JWT =================
+# ── JWT ───────────────────────────────────────────────────────────────────────
 
 SECRET_KEY = "eXCeeTechSecretKeyForJWTGeneration"
-ALGORITHM = "HS256"
+ALGORITHM  = "HS256"
 ACCESS_TOKEN_EXPIRE_HOURS = 24
 
 
-def create_access_token(data: dict):
+def create_access_token(data: dict, expires_delta: timedelta | None = None) -> str:
+    """
+    Encode a JWT.  ``data`` must include ``shop_id``.
+    Workspace-aware tokens should also include ``workspace_version``.
+    """
     to_encode = data.copy()
-    expire = datetime.utcnow() + timedelta(hours=ACCESS_TOKEN_EXPIRE_HOURS)
-    to_encode.update({"exp": expire})
+    expire = (
+        datetime.utcnow() + expires_delta
+        if expires_delta
+        else datetime.utcnow() + timedelta(hours=ACCESS_TOKEN_EXPIRE_HOURS)
+    )
+    to_encode["exp"] = expire
     return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
 
 
-def verify_token(token: str):
+def decode_token(token: str) -> dict:
+    """Return the full decoded payload dict. Raises HTTP 401 on failure."""
     try:
-        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
-        shop_id = payload.get("shop_id")
-
-        if shop_id is None:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Invalid token"
-            )
-
-        return shop_id
-
+        return jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
     except JWTError:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid token"
+            detail="Invalid or expired token",
         )
-    
-def create_access_token(data: dict, expires_delta: timedelta | None = None):
-
-    to_encode = data.copy()
-
-    if expires_delta:
-        expire = datetime.utcnow() + expires_delta
-    else:
-        expire = datetime.utcnow() + timedelta(hours=24)
-
-    to_encode.update({"exp": expire})
-
-    encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
-
-    return encoded_jwt
 
 
-def decode_token(token: str):
-
-    try:
-        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
-        return payload
-
-    except JWTError:
+def verify_token(token: str) -> int:
+    """
+    Backwards-compatible helper — returns only shop_id (int).
+    New code should prefer ``verify_token_full()`` for workspace-version checks.
+    """
+    payload = decode_token(token)
+    shop_id = payload.get("shop_id")
+    if shop_id is None:
         raise HTTPException(
-            status_code=401,
-            detail="Invalid or expired token"
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid token: missing shop_id",
         )
+    return int(shop_id)
+
+
+def verify_token_full(token: str) -> dict:
+    """
+    Returns the full decoded payload dict.
+    Guaranteed key: ``shop_id`` (int).
+    Optional key:   ``workspace_version`` (int | None).
+    """
+    payload = decode_token(token)
+    if payload.get("shop_id") is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid token: missing shop_id",
+        )
+    return payload

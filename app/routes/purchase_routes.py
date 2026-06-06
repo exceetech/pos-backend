@@ -13,6 +13,7 @@ from app.models.purchase_batch import PurchaseBatch
 from app.models.credit import CreditAccount
 from app.models.shop_products import ShopProduct
 from app.models.global_products import GlobalProduct
+from app.models.inventory import Inventory
 from app.schemas.purchase_schema import PurchaseSyncRequest, PurchaseSyncResponse
 from app.utils import normalize_name
 from fastapi.responses import JSONResponse
@@ -211,10 +212,65 @@ def sync_purchases(
             # ✅ Insert items
             for item in p.items:
                 hsn_desc = item.hsn_description if item.hsn_description else item.product_name
+
+                # Resolve shop_product_id using fallback if it is null/None
+                resolved_product_id = item.shop_product_id
+                sp = None
+
+                if resolved_product_id:
+                    sp = db.query(ShopProduct).filter(
+                        ShopProduct.id == resolved_product_id,
+                        ShopProduct.shop_id == current_shop.id
+                    ).first()
+
+                if not sp:
+                    # Fallback: match by normalised name + variant + unit
+                    gp = db.query(GlobalProduct).filter(
+                        GlobalProduct.name == normalize_name(item.product_name)
+                    ).first()
+                    if gp:
+                        variant = item.variant.strip() if item.variant else None
+                        unit_str = (item.unit or "piece").lower().strip()
+                        sp = db.query(ShopProduct).filter(
+                            ShopProduct.shop_id == current_shop.id,
+                            ShopProduct.global_product_id == gp.id,
+                            ShopProduct.unit == unit_str,
+                            (
+                                ShopProduct.variant_name.is_(None)
+                                if variant is None
+                                else ShopProduct.variant_name == variant
+                            )
+                        ).first()
+                        if sp:
+                            resolved_product_id = sp.id
+
+                # For any matched product, explicitly ensure its ShopProduct.is_active
+                # and corresponding Inventory.is_active are set to True
+                if sp:
+                    sp.is_active = True
+                    _apply_sales_tax_to_product(sp, item)
+
+                    inventory = db.query(Inventory).filter(
+                        Inventory.product_id == sp.id,
+                        Inventory.shop_id == current_shop.id
+                    ).first()
+                    if inventory:
+                        inventory.is_active = True
+                    else:
+                        inventory = Inventory(
+                            product_id=sp.id,
+                            shop_id=current_shop.id,
+                            current_stock=0.0,
+                            average_cost=0.0,
+                            is_active=True
+                        )
+                        db.add(inventory)
+                        db.flush()
+
                 db.add(
                     PurchaseItem(
                         purchase_id=purchase.id,
-                        shop_product_id=item.shop_product_id,
+                        shop_product_id=resolved_product_id,
                         product_name=item.product_name,
                         variant=item.variant,
                         hsn_code=item.hsn_code,
@@ -245,40 +301,8 @@ def sync_purchases(
                     )
                 )
 
-                # ✅ Update shop_product sales-tax fields regardless of whether the
-                # client knows the server-side product id yet.
-                #   • Known product  → look up directly by shop_product_id (fast path).
-                #   • Unknown product → fall back to name+variant+unit lookup so that
-                #     products added through purchase but not yet fully synced still
-                #     get their tax rates written to the backend.
-                if item.shop_product_id:
-                    sp = db.query(ShopProduct).filter(
-                        ShopProduct.id == item.shop_product_id,
-                        ShopProduct.shop_id == current_shop.id
-                    ).first()
-                    _apply_sales_tax_to_product(sp, item)
-                else:
-                    # Fallback: match by normalised name + variant + unit
-                    gp = db.query(GlobalProduct).filter(
-                        GlobalProduct.name == normalize_name(item.product_name)
-                    ).first()
-                    if gp:
-                        variant = item.variant.strip() if item.variant else None
-                        unit_str = (item.unit or "piece").lower().strip()
-                        sp = db.query(ShopProduct).filter(
-                            ShopProduct.shop_id == current_shop.id,
-                            ShopProduct.global_product_id == gp.id,
-                            ShopProduct.unit == unit_str,
-                            (
-                                ShopProduct.variant_name.is_(None)
-                                if variant is None
-                                else ShopProduct.variant_name == variant
-                            )
-                        ).first()
-                        _apply_sales_tax_to_product(sp, item)
-
                 # ✅ Auto-create PurchaseBatch for Hybrid Inventory
-                if item.shop_product_id:
+                if resolved_product_id:
                     unit_cost = (item.taxable_amount / item.quantity) if item.quantity > 0 else 0.0
                     gst_pct = item.purchase_cgst_percentage + item.purchase_sgst_percentage + item.purchase_igst_percentage
 
@@ -286,7 +310,7 @@ def sync_purchases(
                         PurchaseBatch(
                             shop_id=current_shop.id,
                             local_id=item.local_id,
-                            product_id=item.shop_product_id,
+                            product_id=resolved_product_id,
                             purchase_invoice_id=purchase.id,
                             supplier_name=p.supplier_name,
                             supplier_gstin=p.supplier_gstin,
@@ -328,3 +352,86 @@ def sync_purchases(
         success_count=success_count,
         purchase_id_map=purchase_id_map
     )
+
+
+@router.get("/my")
+def get_my_purchases(
+    db: Session = Depends(get_db),
+    current_shop = Depends(get_current_shop)
+):
+    purchases = db.query(Purchase).filter(
+        Purchase.shop_id == current_shop.id
+    ).all()
+
+    response = []
+    for p in purchases:
+        items = db.query(PurchaseItem).filter(
+            PurchaseItem.purchase_id == p.id
+        ).all()
+
+        item_list = []
+        for item in items:
+            item_list.append({
+                "shop_product_id": item.shop_product_id,
+                "product_name": item.product_name,
+                "variant": item.variant,
+                "hsn_code": item.hsn_code,
+                "quantity": item.quantity,
+                "unit": item.unit,
+                "taxable_amount": item.taxable_amount,
+                "invoice_value": item.invoice_value,
+                "cost_price": item.cost_price,
+                "purchase_cgst_percentage": item.purchase_cgst_percentage,
+                "purchase_sgst_percentage": item.purchase_sgst_percentage,
+                "purchase_igst_percentage": item.purchase_igst_percentage,
+                "purchase_cgst_amount": item.purchase_cgst_amount,
+                "purchase_sgst_amount": item.purchase_sgst_amount,
+                "purchase_igst_amount": item.purchase_igst_amount,
+                "sales_cgst_percentage": item.sales_cgst_percentage,
+                "sales_sgst_percentage": item.sales_sgst_percentage,
+                "sales_igst_percentage": item.sales_igst_percentage,
+                "cess_percentage": item.cess_percentage,
+                "cess_amount": item.cess_amount,
+                "eligibility_for_itc": item.eligibility_for_itc,
+                "availed_itc_igst": item.availed_itc_igst,
+                "availed_itc_cgst": item.availed_itc_cgst,
+                "availed_itc_sgst": item.availed_itc_sgst,
+                "availed_itc_cess": item.availed_itc_cess,
+                "hsn_description": item.hsn_description,
+                "official_uqc": item.official_uqc,
+                "supply_classification": item.supply_classification
+            })
+
+        response.append({
+            "id": p.id,
+            "invoice_number": p.invoice_number,
+            "supplier_gstin": p.supplier_gstin,
+            "supplier_name": p.supplier_name,
+            "state": p.state,
+            "taxable_amount": p.taxable_amount,
+            "cgst_percentage": p.cgst_percentage,
+            "sgst_percentage": p.sgst_percentage,
+            "igst_percentage": p.igst_percentage,
+            "cgst_amount": p.cgst_amount,
+            "sgst_amount": p.sgst_amount,
+            "igst_amount": p.igst_amount,
+            "invoice_value": p.invoice_value,
+            "invoice_date": int(p.invoice_date.timestamp() * 1000) if p.invoice_date else None,
+            "is_credit": p.is_credit == 1,
+            "credit_account_id": p.credit_account_id,
+            "created_at": int(p.created_at.timestamp() * 1000) if p.created_at else None,
+            "place_of_supply_code": p.place_of_supply_code,
+            "reverse_charge": p.reverse_charge,
+            "invoice_type": p.invoice_type,
+            "supply_type": p.supply_type,
+            "cess_paid": p.cess_paid,
+            "eligibility_for_itc": p.eligibility_for_itc,
+            "availed_itc_integrated_tax": p.availed_itc_integrated_tax,
+            "availed_itc_central_tax": p.availed_itc_central_tax,
+            "availed_itc_state_tax": p.availed_itc_state_tax,
+            "availed_itc_cess": p.availed_itc_cess,
+            "purchase_source": p.purchase_source,
+            "items": item_list
+        })
+
+    return response

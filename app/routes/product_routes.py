@@ -246,13 +246,14 @@ def get_my_products(
         ShopProduct.official_uqc,
         ShopProduct.hsn_description,
         ShopProduct.cess_rate,
+        ShopProduct.is_active,
+        ShopProduct.is_purchased,
         GlobalProduct.name
     ).join(
         GlobalProduct,
         ShopProduct.global_product_id == GlobalProduct.id
     ).filter(
-        ShopProduct.shop_id == current_shop.id,
-        ShopProduct.is_active == True
+        ShopProduct.shop_id == current_shop.id
     ).all()
 
     return [
@@ -269,7 +270,9 @@ def get_my_products(
             "igst_percentage": r.igst_percentage or 0.0,
             "official_uqc": r.official_uqc,
             "hsn_description": r.hsn_description,
-            "cess_rate": r.cess_rate or 0.0
+            "cess_rate": r.cess_rate or 0.0,
+            "is_active": r.is_active,
+            "is_purchased": r.is_purchased
         }
         for r in results
     ]
@@ -355,6 +358,14 @@ def update_shop_product(
     product.official_uqc     = (data.official_uqc or "").strip().upper() or None
     product.hsn_description  = data.hsn_description or None
     product.cess_rate        = data.cess_rate or 0.0
+
+    # Reactivate inventory if it exists
+    inventory = db.query(Inventory).filter(
+        Inventory.product_id == product.id,
+        Inventory.shop_id == current_shop.id
+    ).first()
+    if inventory:
+        inventory.is_active = True
 
     db.commit()
     db.refresh(product)
