@@ -156,7 +156,7 @@ def sync_purchases(
 
                 # Delete items and batches
                 db.query(PurchaseItem).filter(PurchaseItem.purchase_id == purchase.id).delete()
-                db.query(PurchaseBatch).filter(PurchaseBatch.purchase_invoice_id == purchase.id).delete()
+                # Removed deletion of PurchaseBatch because Android syncs them directly
             else:
                 # ✅ Create purchase header
                 purchase = Purchase(

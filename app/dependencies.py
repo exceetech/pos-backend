@@ -43,6 +43,18 @@ def get_current_shop(
 
     # ── 3. Shop must be ACTIVE ────────────────────────────────────────────────
     if shop.status != "ACTIVE":
+        # If the shop is ARCHIVED, and the token has a workspace_version,
+        # it means the workspace was rotated or restored. We must throw 409
+        # so the client knows to wipe its local database.
+        if shop.status == "ARCHIVED" and jwt_ws_version is not None:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "error":   "WORKSPACE_CHANGED",
+                    "message": "Your workspace has been replaced or restored. "
+                               "Please reload the app to continue.",
+                }
+            )
         raise HTTPException(
             status_code=401,
             detail="Account is not active. Please contact support."
