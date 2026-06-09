@@ -203,7 +203,8 @@ def add_to_shop(
         official_uqc=(data.official_uqc or "").strip().upper() or None,
         hsn_description=data.hsn_description or None,
         cess_rate=data.cess_rate or 0.0,
-        supply_classification=data.supply_classification or "TAXABLE"
+        supply_classification=data.supply_classification or "TAXABLE",
+        category=(data.category or "").strip()
     )
 
     db.add(new_product)
@@ -246,6 +247,7 @@ def get_my_products(
         ShopProduct.official_uqc,
         ShopProduct.hsn_description,
         ShopProduct.cess_rate,
+        ShopProduct.category,
         ShopProduct.is_active,
         ShopProduct.is_purchased,
         GlobalProduct.name
@@ -271,6 +273,7 @@ def get_my_products(
             "official_uqc": r.official_uqc,
             "hsn_description": r.hsn_description,
             "cess_rate": r.cess_rate or 0.0,
+            "category": r.category or "",
             "is_active": r.is_active,
             "is_purchased": r.is_purchased
         }
@@ -358,6 +361,10 @@ def update_shop_product(
     product.official_uqc     = (data.official_uqc or "").strip().upper() or None
     product.hsn_description  = data.hsn_description or None
     product.cess_rate        = data.cess_rate or 0.0
+    product.supply_classification = data.supply_classification or "TAXABLE"
+    # ── Category (v40): apply edits; blank leaves the value unchanged. ──
+    if (data.category or "").strip():
+        product.category = data.category.strip()
 
     # Reactivate inventory if it exists
     inventory = db.query(Inventory).filter(
@@ -560,7 +567,8 @@ def _upsert_shop_product(
         official_uqc      = (data.official_uqc or "").strip().upper() or None,
         hsn_description   = data.hsn_description or None,
         cess_rate         = data.cess_rate or 0.0,
-        supply_classification = data.supply_classification or "TAXABLE"
+        supply_classification = data.supply_classification or "TAXABLE",
+        category          = (data.category or "").strip()
     )
     db.add(sp)
     db.flush()

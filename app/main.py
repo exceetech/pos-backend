@@ -144,6 +144,8 @@ def _add_gstr_support_columns() -> None:
             ("official_uqc", "official_uqc VARCHAR NULL"),
             ("hsn_description", "hsn_description VARCHAR NULL"),
             ("cess_rate", "cess_rate DOUBLE PRECISION NOT NULL DEFAULT 0.0"),
+            ("supply_classification", "supply_classification VARCHAR NOT NULL DEFAULT 'TAXABLE'"),
+            ("category", "category VARCHAR NULL DEFAULT ''"),
         ],
         "gst_sales_invoice": [
             ("invoice_number", "invoice_number VARCHAR NULL DEFAULT ''"),
@@ -211,6 +213,60 @@ try:
     _add_gstr_support_columns()
 except Exception as e:  # pragma: no cover
     print(f"[startup] GSTR support column migration skipped: {e}")
+
+
+# ──────────────────────────────────────────────────────────────────────
+# v40 — Categories + Customer master. create_all() makes the two new
+# tables; this explicit ensure covers already-deployed DBs where
+# create_all() ran before these models existed. The shop_products.category
+# column is handled by _add_gstr_support_columns above.
+# ──────────────────────────────────────────────────────────────────────
+def _ensure_v40_tables() -> None:
+    from app.models.shop_category import ShopCategory
+    from app.models.customer import Customer
+    ShopCategory.__table__.create(bind=engine, checkfirst=True)
+    Customer.__table__.create(bind=engine, checkfirst=True)
+
+try:
+    _ensure_v40_tables()
+except Exception as e:  # pragma: no cover
+    print(f"[startup] v40 tables ensure skipped: {e}")
+
+
+# ──────────────────────────────────────────────────────────────────────
+# v41 — A customer may have separate B2C and B2B rows under one phone.
+# Move the customers unique key from (shop_id, phone) to
+# (shop_id, phone, customer_type). Best-effort + idempotent.
+# ──────────────────────────────────────────────────────────────────────
+def _migrate_customer_unique_key() -> None:
+    from sqlalchemy import inspect, text
+    insp = inspect(engine)
+    if "customers" not in insp.get_table_names():
+        return
+    with engine.connect() as conn:
+        # Drop the old 2-col unique constraint/index if present.
+        for stmt in (
+            "ALTER TABLE customers DROP CONSTRAINT IF EXISTS uix_customer_shop_phone",
+            "DROP INDEX IF EXISTS uix_customer_shop_phone",
+        ):
+            try:
+                conn.execute(text(stmt))
+            except Exception:
+                pass
+        # Add the new 3-col unique index if missing.
+        try:
+            conn.execute(text(
+                "CREATE UNIQUE INDEX IF NOT EXISTS uix_customer_shop_phone_type "
+                "ON customers (shop_id, phone, customer_type)"
+            ))
+        except Exception:
+            pass
+        conn.commit()
+
+try:
+    _migrate_customer_unique_key()
+except Exception as e:  # pragma: no cover
+    print(f"[startup] customer unique-key migration skipped: {e}")
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -553,6 +609,10 @@ from app.routes.purchase_import_details_routes import router as purchase_import_
 app.include_router(purchase_import_details_router)
 from app.routes.import_service_routes import router as import_service_router
 app.include_router(import_service_router)
+from app.routes.category_routes import router as category_router
+app.include_router(category_router)
+from app.routes.customer_routes import router as customer_router
+app.include_router(customer_router)
 # Units
 from app.schemas.product_schema import UnitListResponse
 

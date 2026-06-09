@@ -40,3 +40,5 @@ __all__ = [
 from .purchase_batch import PurchaseBatch  # noqa: F401
 from .credit_note import CreditNote, CreditNoteItem  # noqa: F401
 from .import_service import ImportService  # noqa: F401
+from .shop_category import ShopCategory  # noqa: F401
+from .customer import Customer  # noqa: F401

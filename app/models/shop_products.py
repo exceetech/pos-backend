@@ -32,3 +32,7 @@ class ShopProduct(Base):
     hsn_description  = Column(String, nullable=True)   # description for HSN summary
     cess_rate        = Column(Float, default=0.0, nullable=False)
     supply_classification = Column(String, nullable=False, default="TAXABLE") # TAXABLE, NIL_RATED, EXEMPT, NON_GST
+
+    # ── Category (v40) ── plain string; predefined vocabulary lives on
+    # the client, custom values are also stored in `shop_categories`.
+    category = Column(String, nullable=True, default="")

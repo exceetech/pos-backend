@@ -26,6 +26,7 @@ class AddProductRequest(BaseModel):
     hsn_description: Optional[str] = None
     cess_rate: float = 0.0
     supply_classification: str = "TAXABLE"
+    category: str = ""
 
 class ProductResponse(BaseModel):
     id: int
@@ -78,6 +79,7 @@ class ShopProductDto(BaseModel):
     hsn_description: Optional[str] = None
     cess_rate: float = 0.0
     supply_classification: str = "TAXABLE"
+    category: str = ""
 
 class ShopProductSyncRequest(BaseModel):
     products: List[ShopProductDto]
