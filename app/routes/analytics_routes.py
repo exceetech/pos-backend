@@ -21,53 +21,53 @@ def get_ai_report(
     db: Session = Depends(get_db),
     current_shop = Depends(get_current_shop)
 ):
-
+    from app.services.insights_service import generate_structured_insights
     shop_id = current_shop.id
 
-    results = (
-        db.query(
-            GlobalProduct.name.label("product"),
-            func.sum(BillItem.quantity).label("quantity"),
-
-            # 🔥 FIXED REVENUE CALCULATION
-            func.sum(
-                BillItem.subtotal *
-                (Bill.total_amount / (
-                    (Bill.total_amount - Bill.gst + Bill.discount)
-                    if (Bill.total_amount - Bill.gst + Bill.discount) != 0 else 1
-                ))
-            ).label("revenue")
-
+    try:
+        results = (
+            db.query(
+                GlobalProduct.name.label("product"),
+                func.sum(BillItem.quantity).label("quantity"),
+                func.sum(
+                    BillItem.subtotal *
+                    (Bill.total_amount / (
+                        (Bill.total_amount - Bill.gst + Bill.discount)
+                        if (Bill.total_amount - Bill.gst + Bill.discount) != 0 else 1
+                    ))
+                ).label("revenue")
+            )
+            .join(Bill, Bill.id == BillItem.bill_id)
+            .join(ShopProduct, ShopProduct.id == BillItem.shop_product_id)
+            .join(GlobalProduct, GlobalProduct.id == ShopProduct.global_product_id)
+            .filter(
+                ShopProduct.shop_id == shop_id,
+                Bill.active == True
+            )
+            .group_by(GlobalProduct.name)
+            .all()
         )
-        .join(Bill, Bill.id == BillItem.bill_id)
-        .join(ShopProduct, ShopProduct.id == BillItem.shop_product_id)
-        .join(GlobalProduct, GlobalProduct.id == ShopProduct.global_product_id)
-        .filter(
-            ShopProduct.shop_id == shop_id,
-            Bill.active == True
-        )
-        .group_by(GlobalProduct.name)
-        .all()
-    )
 
-    report_data = [
-        {
-            "product": r.product,
-            "quantity": int(r.quantity or 0),
-            "revenue": float(r.revenue or 0)
-        }
-        for r in results
-    ]
+        report_data = [
+            {
+                "product": r.product,
+                "quantity": int(r.quantity or 0),
+                "revenue": float(r.revenue or 0)
+            }
+            for r in results
+        ]
 
-    if not report_data:
+        insights = generate_structured_insights(db, shop_id)
+        
         return {
-            "report_data": [],
-            "ai_report": "No sales data yet. Start selling to generate AI insights."
+            "insights": insights,
+            "report_data": report_data,
+            "ai_report": "New insights system is active. See cards below."
         }
-
-    insights = generate_ai_insights(report_data)
-
-    return {
-        "report_data": report_data,
-        "ai_report": insights
-    }
+    except Exception as e:
+        print(f"Insight Generation Error: {e}")
+        return {
+            "insights": [],
+            "report_data": [],
+            "ai_report": ""
+        }
