@@ -105,7 +105,7 @@ def generate_structured_insights(db: Session, shop_id: int):
         Purchase.created_at >= seven_days_ago
     ).scalar() or 0.0
 
-    cash_sales = db.query(func.sum(Bill.total_amount)).filter(
+    cash_sales = db.query(func.sum(Bill.final_amount)).filter(
         Bill.shop_id == shop_id,
         Bill.payment_method.not_in(["Credit", "Udhar"]),
         Bill.active == True,
@@ -123,7 +123,7 @@ def generate_structured_insights(db: Session, shop_id: int):
         })
 
     # 5. Discount Drain (Leak)
-    recent_discounts = db.query(func.sum(Bill.discount)).filter(
+    recent_discounts = db.query(func.sum(Bill.discount_amount)).filter(
         Bill.shop_id == shop_id,
         Bill.created_at >= seven_days_ago,
         Bill.active == True
@@ -143,7 +143,9 @@ def generate_structured_insights(db: Session, shop_id: int):
     # ---------------------------------------------------------
 
     # Helper for profit calculation
-    calc_profit = (BillItem.subtotal - (Inventory.average_cost * BillItem.quantity))
+    # R2 FIX: line_subtotal is the direct successor of the removed legacy
+    # `subtotal` (qty × unit_price, pre-tax) — keeps profit GST-free.
+    calc_profit = (BillItem.line_subtotal - (Inventory.average_cost * BillItem.quantity))
 
     # 6. High-Margin Star (Gold)
     best_profit_item = db.query(
@@ -212,11 +214,11 @@ def generate_structured_insights(db: Session, shop_id: int):
         })
 
     # 9. AOV Drop (Leak)
-    last_7_aov = db.query(func.avg(Bill.total_amount)).filter(
+    last_7_aov = db.query(func.avg(Bill.final_amount)).filter(
         Bill.shop_id == shop_id, Bill.created_at >= seven_days_ago, Bill.active == True
     ).scalar() or 0.0
     
-    prev_7_aov = db.query(func.avg(Bill.total_amount)).filter(
+    prev_7_aov = db.query(func.avg(Bill.final_amount)).filter(
         Bill.shop_id == shop_id, Bill.created_at >= fourteen_days_ago, Bill.created_at < seven_days_ago, Bill.active == True
     ).scalar() or 0.0
 
@@ -340,21 +342,24 @@ def generate_structured_insights(db: Session, shop_id: int):
         Bill.shop_id == shop_id, 
         Bill.created_at >= thirty_days_ago, 
         Bill.active == True
-    ).order_by(Bill.total_amount.desc()).first()
+    ).order_by(Bill.final_amount.desc()).first()
 
-    if highest_bill and highest_bill.total_amount > 2000:
+    if highest_bill and highest_bill.final_amount > 2000:
         insights.append({
             "type": "gold",
             "title": "Highest Value Order",
-            "description": f"You captured a single order worth ₹{highest_bill.total_amount:,.2f} this month! Keep driving large ticket sales.",
+            "description": f"You captured a single order worth ₹{highest_bill.final_amount:,.2f} this month! Keep driving large ticket sales.",
             "actionText": "View Sales",
             "actionType": "VIEW_BILLS"
         })
 
     # 16. High Customer Return Rate (Leak)
     cust_return = db.query(func.sum(CreditNote.total_amount)).filter(
-        CreditNote.shop_id == shop_id, 
-        CreditNote.created_at >= thirty_days_ago
+        CreditNote.shop_id == shop_id,
+        CreditNote.created_at >= thirty_days_ago,
+        # The table holds both note types — only "C" (sales returns)
+        # counts as a customer return; "D" (debit notes) are sales.
+        func.upper(CreditNote.note_type) == "C"
     ).scalar() or 0.0
 
     if cust_return > 1000:
@@ -399,7 +404,7 @@ def generate_structured_insights(db: Session, shop_id: int):
         })
 
     # 19. GST Liability Estimate (Leak/Alert)
-    sales_gst = db.query(func.sum(Bill.gst)).filter(
+    sales_gst = db.query(func.sum(Bill.gst_amount)).filter(
         Bill.shop_id == shop_id, 
         Bill.created_at >= thirty_days_ago, 
         Bill.active == True
@@ -431,7 +436,7 @@ def generate_structured_insights(db: Session, shop_id: int):
         Bill.active == True
     ).scalar() or 0.0
     
-    total_sales_7 = db.query(func.sum(Bill.total_amount)).filter(
+    total_sales_7 = db.query(func.sum(Bill.final_amount)).filter(
         Bill.shop_id == shop_id, 
         Bill.created_at >= seven_days_ago, 
         Bill.active == True
@@ -450,11 +455,11 @@ def generate_structured_insights(db: Session, shop_id: int):
 
 
     # 21. AOV Trend Tracker
-    sales_last_7 = db.query(func.sum(Bill.total_amount), func.count(Bill.id)).filter(
+    sales_last_7 = db.query(func.sum(Bill.final_amount), func.count(Bill.id)).filter(
         Bill.shop_id == shop_id, Bill.created_at >= seven_days_ago, Bill.active == True
     ).first()
     fourteen_days_ago = today_dt - timedelta(days=14)
-    sales_prev_7 = db.query(func.sum(Bill.total_amount), func.count(Bill.id)).filter(
+    sales_prev_7 = db.query(func.sum(Bill.final_amount), func.count(Bill.id)).filter(
         Bill.shop_id == shop_id, Bill.created_at >= fourteen_days_ago, Bill.created_at < seven_days_ago, Bill.active == True
     ).first()
     
@@ -497,11 +502,11 @@ def generate_structured_insights(db: Session, shop_id: int):
             })
 
     # 24. Weekend vs. Weekday Shift
-    all_bills_30 = db.query(Bill.total_amount, Bill.created_at).filter(
+    all_bills_30 = db.query(Bill.final_amount, Bill.created_at).filter(
         Bill.shop_id == shop_id, Bill.created_at >= thirty_days_ago, Bill.active == True
     ).all()
-    weekend_rev = sum(b.total_amount for b in all_bills_30 if b.created_at.weekday() >= 5)
-    total_rev = sum(b.total_amount for b in all_bills_30)
+    weekend_rev = sum(b.final_amount for b in all_bills_30 if b.created_at.weekday() >= 5)
+    total_rev = sum(b.final_amount for b in all_bills_30)
     if total_rev > 10000 and weekend_rev > (total_rev * 0.5):
         insights.append({
             "type": "gold",
@@ -559,10 +564,10 @@ def generate_structured_insights(db: Session, shop_id: int):
         })
 
     # 27. Credit vs Cash Ratio
-    total_revenue_30 = db.query(func.sum(Bill.total_amount)).filter(
+    total_revenue_30 = db.query(func.sum(Bill.final_amount)).filter(
         Bill.shop_id == shop_id, Bill.created_at >= thirty_days_ago, Bill.active == True
     ).scalar() or 0.0
-    credit_rev = db.query(func.sum(Bill.total_amount)).filter(
+    credit_rev = db.query(func.sum(Bill.final_amount)).filter(
         Bill.shop_id == shop_id, Bill.created_at >= thirty_days_ago, Bill.active == True, Bill.payment_method == "credit"
     ).scalar() or 0.0
     if total_revenue_30 > 5000 and credit_rev > (total_revenue_30 * 0.6):
@@ -630,7 +635,7 @@ def generate_structured_insights(db: Session, shop_id: int):
         })
 
     # 32. Discount Drain
-    discount_drain = db.query(func.sum(Bill.discount)).filter(
+    discount_drain = db.query(func.sum(Bill.discount_amount)).filter(
         Bill.shop_id == shop_id, Bill.created_at >= seven_days_ago, Bill.active == True
     ).scalar() or 0.0
     if total_profit_7 > 0 and discount_drain > (total_profit_7 * 0.15):
@@ -663,12 +668,12 @@ def generate_structured_insights(db: Session, shop_id: int):
     from app.models.shop_products import ShopProduct
     top_cat = db.query(
         ShopProduct.category,
-        func.sum(BillItem.subtotal)
+        func.sum(BillItem.total_amount)
     ).join(BillItem, BillItem.shop_product_id == ShopProduct.id).join(
         Bill, Bill.id == BillItem.bill_id
     ).filter(
         Bill.shop_id == shop_id, Bill.created_at >= thirty_days_ago, Bill.active == True, ShopProduct.category != ""
-    ).group_by(ShopProduct.category).order_by(func.sum(BillItem.subtotal).desc()).limit(1).first()
+    ).group_by(ShopProduct.category).order_by(func.sum(BillItem.total_amount).desc()).limit(1).first()
     
     if top_cat and top_cat[0] and top_cat[1] > 2000:
         insights.append({
@@ -750,12 +755,12 @@ def generate_structured_insights(db: Session, shop_id: int):
     # 39. Most Discounted Categories
     most_discounted = db.query(
         ShopProduct.category,
-        func.sum(Bill.discount)
+        func.sum(Bill.discount_amount)
     ).join(BillItem, BillItem.shop_product_id == ShopProduct.id).join(
         Bill, Bill.id == BillItem.bill_id
     ).filter(
         Bill.shop_id == shop_id, Bill.created_at >= thirty_days_ago, Bill.active == True, ShopProduct.category != ""
-    ).group_by(ShopProduct.category).order_by(func.sum(Bill.discount).desc()).limit(1).first()
+    ).group_by(ShopProduct.category).order_by(func.sum(Bill.discount_amount).desc()).limit(1).first()
     
     if most_discounted and most_discounted[0] and most_discounted[1] > 500:
         insights.append({
@@ -861,7 +866,7 @@ def generate_structured_insights(db: Session, shop_id: int):
 
     # 48. Micro-Transaction Dominance
     micro_bills = db.query(func.count(Bill.id)).filter(
-        Bill.shop_id == shop_id, Bill.created_at >= seven_days_ago, Bill.active == True, Bill.total_amount < 50
+        Bill.shop_id == shop_id, Bill.created_at >= seven_days_ago, Bill.active == True, Bill.final_amount < 50
     ).scalar() or 0
     total_bills_7 = db.query(func.count(Bill.id)).filter(
         Bill.shop_id == shop_id, Bill.created_at >= seven_days_ago, Bill.active == True

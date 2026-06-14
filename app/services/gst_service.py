@@ -46,6 +46,49 @@ def get_state_name(state_code: str) -> str:
     return INDIA_STATES.get(state_code, "Unknown")
 
 
+def get_state_code_from_name(state_name: str) -> str:
+    """Reverse lookup: state name → 2-digit code. Case/space tolerant."""
+    if not state_name:
+        return ""
+    normalized = state_name.strip().lower()
+    for code, name in INDIA_STATES.items():
+        if name.lower() == normalized:
+            return code
+    return ""
+
+
+def normalize_customer_state(
+    customer_state: str | None,
+    customer_state_code: str | None,
+    shop_state_code: str | None = None,
+) -> Tuple[str | None, str | None]:
+    """
+    Return a consistent (state_name, state_code) pair.
+
+    - Name given, code missing  → code looked up from the name.
+    - Code given, name missing  → name looked up from the code.
+    - Both missing              → fall back to the shop's own state
+                                  (intrastate B2C sale).
+    - Name given but unknown    → keep the name as typed; code stays
+                                  whatever could be resolved.
+    """
+    state = (customer_state or "").strip() or None
+    code = (customer_state_code or "").strip() or None
+
+    if state and not code:
+        code = get_state_code_from_name(state) or None
+    if code and not state:
+        name = INDIA_STATES.get(code)
+        if name:
+            state = name
+    if not state and not code and shop_state_code:
+        code = shop_state_code.strip() or None
+        if code:
+            state = INDIA_STATES.get(code)
+
+    return state, code
+
+
 # ============================================================
 # Supply Type Determination
 # ============================================================

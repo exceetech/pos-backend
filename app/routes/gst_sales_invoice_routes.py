@@ -18,6 +18,9 @@ from sqlalchemy.orm import Session, selectinload
 from app.database import get_db
 from app.dependencies import get_current_shop
 from app.models.gst_sales_invoice import GstSalesInvoice, GstSalesInvoiceItem
+from app.models.gst_profile import StoreGstProfile
+from app.models.bill import Bill
+from app.services.gst_service import normalize_customer_state, extract_state_code
 from app.schemas.gst_sales_invoice_schema import (
     CreateGstSalesInvoice,
     GstSalesInvoiceCreate,
@@ -44,8 +47,72 @@ def _epoch_ms_to_dt(ms: int | None) -> datetime:
         return datetime.utcnow()
 
 
-def _to_invoice(payload: CreateGstSalesInvoice, shop_id: int) -> GstSalesInvoice:
+def _cancel_matching_bill(db: Session, shop_id: int,
+                          invoice_number: str | None,
+                          cancelled_dt: datetime | None) -> None:
+    """Propagate a GST-invoice cancellation to the analytics `bills` row.
+
+    Invoice numbers equal bill numbers (the sync writes the server
+    bill_number back into the GST invoice). Without this, a voided
+    invoice kept counting in report revenue/bill counts forever, so
+    analytics disagreed with GSTR-1. Sets active=False so every report
+    (they all filter active == True) excludes it with zero report
+    changes. Idempotent; caller commits."""
+    if not invoice_number:
+        return
+    bill = db.query(Bill).filter(
+        Bill.shop_id == shop_id,
+        Bill.bill_number == invoice_number
+    ).first()
+    if bill and not bill.is_cancelled:
+        bill.is_cancelled = True
+        bill.cancelled_at = cancelled_dt or datetime.utcnow()
+        bill.active = False
+
+
+def _shop_state_code(db: Session, shop_id: int) -> str:
+    """Shop's own 2-digit state code from its GST profile (code or GSTIN)."""
+    profile = db.query(StoreGstProfile).filter(
+        StoreGstProfile.shop_id == shop_id
+    ).first()
+    if profile:
+        if (profile.state_code or "").strip():
+            return profile.state_code.strip()
+        return extract_state_code(profile.gstin or "")
+    return ""
+
+
+def _resolve_state_pair(
+    db: Session,
+    shop_id: int,
+    customer_state: str | None,
+    customer_state_code: str | None,
+    customer_gst: str | None,
+):
+    """
+    Consistent (state name, code) pair for an invoice:
+      • name/code derived from each other when one is missing,
+      • buyer GSTIN prefix used as the code when both are missing,
+      • shop's own state as the final fallback (local B2C sale).
+    """
+    code = (customer_state_code or "").strip() or None
+    if not code and not (customer_state or "").strip():
+        gst_code = extract_state_code(customer_gst or "")
+        if gst_code:
+            code = gst_code
+    return normalize_customer_state(
+        customer_state,
+        code,
+        shop_state_code=_shop_state_code(db, shop_id),
+    )
+
+
+def _to_invoice(payload: CreateGstSalesInvoice, shop_id: int, db: Session) -> GstSalesInvoice:
     """Map a DTO onto a fresh ORM row, including the line items."""
+    norm_state, norm_state_code = _resolve_state_pair(
+        db, shop_id,
+        payload.customer_state, payload.customer_state_code, payload.customer_gst,
+    )
     invoice = GstSalesInvoice(
         shop_id                  = shop_id,
         bill_id                  = payload.bill_id,
@@ -56,7 +123,7 @@ def _to_invoice(payload: CreateGstSalesInvoice, shop_id: int) -> GstSalesInvoice
         business_name            = payload.business_name,
         customer_phone           = payload.customer_phone,
         customer_gst             = payload.customer_gst,
-        customer_state           = payload.customer_state,
+        customer_state           = norm_state,
         subtotal                 = payload.subtotal,
         total_cgst               = payload.total_cgst,
         total_sgst               = payload.total_sgst,
@@ -69,7 +136,7 @@ def _to_invoice(payload: CreateGstSalesInvoice, shop_id: int) -> GstSalesInvoice
         invoice_date             = payload.invoice_date or 0,
         reverse_charge           = payload.reverse_charge,
         gstr_invoice_type        = payload.gstr_invoice_type,
-        customer_state_code      = payload.customer_state_code,
+        customer_state_code      = norm_state_code,
         ecommerce_gstin          = payload.ecommerce_gstin,
         ecommerce_operator_name  = payload.ecommerce_operator_name,
         # ── New ECO fields (Table 14/15) ──
@@ -89,6 +156,14 @@ def _to_invoice(payload: CreateGstSalesInvoice, shop_id: int) -> GstSalesInvoice
         is_cancelled             = payload.is_cancelled,
         cancelled_at             = _epoch_ms_to_dt(payload.cancelled_at) if payload.cancelled_at else None,
     )
+
+    # Propagate cancellation to the analytics bills row
+    if payload.is_cancelled:
+        _cancel_matching_bill(
+            db, current_shop.id,
+            payload.invoice_number, invoice.cancelled_at
+        )
+
     for item in payload.items:
         invoice.items.append(
             GstSalesInvoiceItem(
@@ -134,7 +209,7 @@ def create_gst_sales_invoice(
             detail="invoice must have at least one line item",
         )
 
-    invoice = _to_invoice(payload, current_shop.id)
+    invoice = _to_invoice(payload, current_shop.id, db)
     db.add(invoice)
     db.commit()
     db.refresh(invoice)
@@ -182,7 +257,11 @@ def sync_gst_sales_invoices(
                 existing.business_name           = inv_dto.business_name
                 existing.customer_phone          = inv_dto.customer_phone
                 existing.customer_gst            = inv_dto.customer_gst
-                existing.customer_state          = inv_dto.customer_state
+                norm_state, norm_state_code = _resolve_state_pair(
+                    db, current_shop.id,
+                    inv_dto.customer_state, inv_dto.customer_state_code, inv_dto.customer_gst,
+                )
+                existing.customer_state          = norm_state
                 existing.subtotal                = inv_dto.subtotal
                 existing.total_cgst              = inv_dto.total_cgst
                 existing.total_sgst              = inv_dto.total_sgst
@@ -194,7 +273,7 @@ def sync_gst_sales_invoices(
                 existing.invoice_date            = inv_dto.invoice_date or 0
                 existing.reverse_charge          = inv_dto.reverse_charge
                 existing.gstr_invoice_type       = inv_dto.gstr_invoice_type
-                existing.customer_state_code     = inv_dto.customer_state_code
+                existing.customer_state_code     = norm_state_code
                 existing.ecommerce_gstin         = inv_dto.ecommerce_gstin
                 existing.ecommerce_operator_name = inv_dto.ecommerce_operator_name
                 # ── New ECO fields (Table 14/15) ──
@@ -214,6 +293,14 @@ def sync_gst_sales_invoices(
                 existing.is_cancelled            = inv_dto.is_cancelled
                 if inv_dto.cancelled_at:
                     existing.cancelled_at = _epoch_ms_to_dt(inv_dto.cancelled_at)
+
+                # Propagate cancellation to the analytics bills row
+                if inv_dto.is_cancelled:
+                    _cancel_matching_bill(
+                        db, current_shop.id,
+                        existing.invoice_number or inv_dto.invoice_number,
+                        existing.cancelled_at
+                    )
 
                 # Replace items wholesale — simpler than diffing,
                 # and the row is small enough that the cost is fine.
@@ -247,10 +334,17 @@ def sync_gst_sales_invoices(
                 db.flush()
                 response.invoice_id_map[str(inv_dto.local_id)] = existing.id
             else:
-                row = _to_invoice(inv_dto, current_shop.id)
+                row = _to_invoice(inv_dto, current_shop.id, db)
                 db.add(row)
                 db.flush()
                 response.invoice_id_map[str(inv_dto.local_id)] = row.id
+
+                # Propagate cancellation to the analytics bills row
+                if row.is_cancelled:
+                    _cancel_matching_bill(
+                        db, current_shop.id,
+                        row.invoice_number, row.cancelled_at
+                    )
 
             response.success_count += 1
         except Exception as e:
@@ -306,6 +400,10 @@ def cancel_gst_sales_invoice(
     )
     invoice.is_cancelled = True
     invoice.cancelled_at = cancelled_dt
+
+    # Propagate to the analytics bills row so reports exclude it too
+    _cancel_matching_bill(db, current_shop.id, invoice.invoice_number, cancelled_dt)
+
     db.commit()
     db.refresh(invoice)
 

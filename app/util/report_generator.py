@@ -50,14 +50,14 @@ def generate_report_pdf(file_path, summary, daily, monthly, products, peak, repo
     styles = getSampleStyleSheet()
 
     # ================= CURRENCY =================
+    # I7 FIX: the app sends its display symbol directly — use it as-is
+    # (trimmed, sanity-capped) instead of substring-matching $/€ only.
     currency_symbol = "₹"
 
     if shop and shop.get("currency"):
-        cur = shop.get("currency")
-        if "$" in cur:
-            currency_symbol = "$"
-        elif "€" in cur:
-            currency_symbol = "€"
+        cur = str(shop.get("currency")).strip()
+        if 0 < len(cur) <= 4:
+            currency_symbol = cur
 
     # ================= STYLES =================
     date_style = ParagraphStyle(

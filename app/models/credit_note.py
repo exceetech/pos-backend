@@ -23,6 +23,7 @@ from sqlalchemy import (
 from sqlalchemy.orm import relationship
 
 from app.database import Base
+from app.models.money_type import MONEY  # R3: exact decimal for money
 
 
 class CreditNote(Base):
@@ -71,13 +72,14 @@ class CreditNote(Base):
     document_series = Column(String, nullable=True)
 
     # ── Aggregate financials ──────────────────────────────────────────────
-    taxable_value = Column(Float, nullable=False, default=0.0)
-    cgst_amount   = Column(Float, nullable=False, default=0.0)
-    sgst_amount   = Column(Float, nullable=False, default=0.0)
-    igst_amount   = Column(Float, nullable=False, default=0.0)
-    cess_amount   = Column(Float, nullable=False, default=0.0)
-    tax_amount    = Column(Float, nullable=False, default=0.0)
-    total_amount  = Column(Float, nullable=False, default=0.0)
+    # R3: MONEY = Numeric(12,2, asdecimal=False)
+    taxable_value = Column(MONEY, nullable=False, default=0.0)
+    cgst_amount   = Column(MONEY, nullable=False, default=0.0)
+    sgst_amount   = Column(MONEY, nullable=False, default=0.0)
+    igst_amount   = Column(MONEY, nullable=False, default=0.0)
+    cess_amount   = Column(MONEY, nullable=False, default=0.0)
+    tax_amount    = Column(MONEY, nullable=False, default=0.0)
+    total_amount  = Column(MONEY, nullable=False, default=0.0)
 
     # ── Sync status ───────────────────────────────────────────────────────
     sync_status = Column(String, nullable=False, default="pending")
@@ -117,18 +119,19 @@ class CreditNoteItem(Base):
     quantity_returned = Column(Float, nullable=False, default=0.0)
 
     # ── Pricing ───────────────────────────────────────────────────────────
-    rate           = Column(Float, nullable=False, default=0.0)
-    cost_price_used = Column(Float, nullable=False, default=0.0)  # for FIFO batch
+    # R3: prices/amounts are MONEY; gst_rate stays Float (percentage)
+    rate           = Column(MONEY, nullable=False, default=0.0)
+    cost_price_used = Column(MONEY, nullable=False, default=0.0)  # for FIFO batch
 
     # ── Tax breakdown ─────────────────────────────────────────────────────
-    taxable_value = Column(Float, nullable=False, default=0.0)
+    taxable_value = Column(MONEY, nullable=False, default=0.0)
     gst_rate      = Column(Float, nullable=False, default=0.0)
-    cgst_amount   = Column(Float, nullable=False, default=0.0)
-    sgst_amount   = Column(Float, nullable=False, default=0.0)
-    igst_amount   = Column(Float, nullable=False, default=0.0)
-    cess_amount   = Column(Float, nullable=False, default=0.0)
-    tax_amount    = Column(Float, nullable=False, default=0.0)
-    total_amount  = Column(Float, nullable=False, default=0.0)
+    cgst_amount   = Column(MONEY, nullable=False, default=0.0)
+    sgst_amount   = Column(MONEY, nullable=False, default=0.0)
+    igst_amount   = Column(MONEY, nullable=False, default=0.0)
+    cess_amount   = Column(MONEY, nullable=False, default=0.0)
+    tax_amount    = Column(MONEY, nullable=False, default=0.0)
+    total_amount  = Column(MONEY, nullable=False, default=0.0)
 
     # Back-ref to the exact BillItem row this return is against.
     # Nullable because not all old bill items carry an id on the server.

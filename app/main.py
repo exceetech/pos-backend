@@ -52,6 +52,24 @@ app.add_middleware(
 Base.metadata.create_all(bind=engine)
 
 # ──────────────────────────────────────────────────────────────────────
+# Belt-and-braces: explicitly ensure `bills` and `bill_items` tables
+# exist.  create_all() is idempotent and handles these, but on some
+# deployments where models are imported late (after create_all runs)
+# the bills table is silently skipped.  Calling .create(checkfirst=True)
+# here guarantees the table is always present before the first request.
+# ──────────────────────────────────────────────────────────────────────
+def _ensure_bills_table() -> None:
+    from app.models.bill import Bill
+    from app.models.bill_items import BillItem
+    Bill.__table__.create(bind=engine, checkfirst=True)
+    BillItem.__table__.create(bind=engine, checkfirst=True)
+
+try:
+    _ensure_bills_table()
+except Exception as e:
+    print(f"[startup] bills table ensure skipped: {e}")
+
+# ──────────────────────────────────────────────────────────────────────
 # Hybrid-inventory: ensure `purchase_batches` exists on deployed DBs.
 # Base.metadata.create_all is idempotent (won't recreate existing), so
 # this is a belt-and-braces explicit log for v20+ rollouts. No ALTER
@@ -171,6 +189,22 @@ def _add_gstr_support_columns() -> None:
             ("uqc", "uqc VARCHAR NULL"),
             ("hsn_description", "hsn_description VARCHAR NULL"),
         ],
+        "bills": [
+            # Idempotency key (duplicate-bill guard): the app's local Room
+            # bill id + device id. /bills/create dedupes on these.
+            ("client_bill_id",  "client_bill_id INTEGER NULL"),
+            ("client_device_id","client_device_id VARCHAR NULL"),
+            # Cancellation (void) state — added when N1/cancellation support
+            # was deployed. create_all() adds these on fresh DBs; this ALTER
+            # covers already-deployed databases where create_all() ran with
+            # the old model and these columns are therefore missing.
+            ("is_cancelled",  "is_cancelled BOOLEAN NOT NULL DEFAULT FALSE"),
+            ("cancelled_at",  "cancelled_at TIMESTAMP NULL"),
+            # created_at — used for timezone-correct period filtering in reports.
+            ("created_at",    "created_at TIMESTAMP NULL"),
+            # active — kept separate from is_cancelled (void vs. archive).
+            ("active",        "active BOOLEAN DEFAULT TRUE"),
+        ],
         "gst_sales_records": [
             ("customer_name", "customer_name VARCHAR NULL"),
             ("business_name", "business_name VARCHAR NULL"),
@@ -206,6 +240,13 @@ def _add_gstr_support_columns() -> None:
             existing = {c["name"] for c in inspector.get_columns(table_name)}
             for column_name, ddl in column_defs:
                 _add_column_if_missing(conn, table_name, existing, column_name, ddl)
+
+        # Lookup index for the bill idempotency key.
+        if "bills" in existing_tables:
+            conn.execute(text(
+                "CREATE INDEX IF NOT EXISTS ix_bills_client_key "
+                "ON bills (shop_id, client_device_id, client_bill_id)"
+            ))
         conn.commit()
 
 
@@ -580,6 +621,48 @@ try:
     _migrate_v34()
 except Exception as e:
     print(f"[startup] v34 migration skipped: {e}")
+
+
+# ──────────────────────────────────────────────────────────────────────
+# One-time cleanup: when _add_gstr_support_columns() added the `active`
+# column it used DEFAULT TRUE, which silently stamped every pre-existing
+# bill row (old test data, seed data, etc.) as active=TRUE.  Those rows
+# also have created_at=NULL because the created_at column didn't exist
+# when they were inserted.  They don't belong in any report aggregate.
+#
+# This migration deactivates them exactly once by flipping active→FALSE
+# for any bill that has no created_at.  Idempotent: re-running it is a
+# no-op because there will be no more NULL-created_at bills after this.
+# ──────────────────────────────────────────────────────────────────────
+def _deactivate_stale_bills() -> None:
+    from sqlalchemy import text
+    with engine.connect() as conn:
+        # Deactivate bills with no created_at (pre-date the column).
+        r1 = conn.execute(text(
+            "UPDATE bills SET active = FALSE "
+            "WHERE created_at IS NULL AND active = TRUE"
+        ))
+        if r1.rowcount:
+            print(f"[startup] deactivated {r1.rowcount} stale bill(s) with NULL created_at")
+
+        # NOTE: We deliberately do NOT delete is_cancelled=TRUE bills here.
+        # The /bills/create endpoint now returns bill_id=-1 immediately when
+        # data.is_cancelled=True, so phantom cancelled bills are never written
+        # to the DB in the first place.
+        # Deleting cancelled bills at startup would:
+        #   1. Erase legitimate user-voided invoices from Bill History (N1
+        #      fix shows them with a "Cancelled" badge for audit purposes).
+        #   2. Break the credit-note double-count guard in reports: the guard
+        #      filters out credit notes where the original bill row is inactive
+        #      (active=False). If the row is deleted, the guard never fires,
+        #      and the credit note re-enters revenue as a phantom deduction.
+
+        conn.commit()
+
+try:
+    _deactivate_stale_bills()
+except Exception as e:  # pragma: no cover
+    print(f"[startup] stale-bills cleanup skipped: {e}")
 
 
 # Routers

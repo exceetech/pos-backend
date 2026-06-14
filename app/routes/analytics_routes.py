@@ -29,13 +29,10 @@ def get_ai_report(
             db.query(
                 GlobalProduct.name.label("product"),
                 func.sum(BillItem.quantity).label("quantity"),
-                func.sum(
-                    BillItem.subtotal *
-                    (Bill.total_amount / (
-                        (Bill.total_amount - Bill.gst + Bill.discount)
-                        if (Bill.total_amount - Bill.gst + Bill.discount) != 0 else 1
-                    ))
-                ).label("revenue")
+                # BillItem.total_amount is already the GST-inclusive,
+                # discount-applied line total, so no gross-up ratio is needed
+                # (the old subtotal * (total/(total-gst+discount)) expression).
+                func.sum(BillItem.total_amount).label("revenue")
             )
             .join(Bill, Bill.id == BillItem.bill_id)
             .join(ShopProduct, ShopProduct.id == BillItem.shop_product_id)
