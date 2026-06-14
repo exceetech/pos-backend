@@ -1047,6 +1047,170 @@ async def email_report(
 
     return {"message": f"{type.capitalize()} report sent successfully 📧"}
 
+# ================= OVERVIEW (single-call for Overview fragment) =================
+
+@router.get("/overview")
+def overview(
+    type: str = "today",
+    start_date: str | None = None,
+    end_date: str | None = None,
+    db: Session = Depends(get_db),
+    current_shop = Depends(get_current_shop)
+):
+    """
+    Everything the Overview fragment needs in one round-trip:
+    KPIs, returns total, cancelled stats, payment split, 7-day sparkline.
+    Uses the same period logic and M3 period-to-date fix as /average-bill.
+    """
+    now = local_now()
+    ptd_applies = True
+
+    if type == "today":
+        start = datetime(now.year, now.month, now.day)
+        end   = start + timedelta(days=1)
+        prev_start = start - timedelta(days=1)
+        prev_end   = start
+
+    elif type == "week":
+        today = local_today()
+        days_since_sunday = (today.weekday() + 1) % 7
+        start = datetime.combine(today - timedelta(days=days_since_sunday), datetime.min.time())
+        end   = start + timedelta(days=7)
+        prev_start = start - timedelta(days=7)
+        prev_end   = start
+
+    elif type == "month":
+        start = datetime(now.year, now.month, 1)
+        end   = datetime(now.year + 1, 1, 1) if now.month == 12 else datetime(now.year, now.month + 1, 1)
+        prev_start = start - (end - start)
+        prev_end   = start
+
+    elif type == "year":
+        start = datetime(now.year, 1, 1)
+        end   = datetime(now.year + 1, 1, 1)
+        prev_start = datetime(now.year - 1, 1, 1)
+        prev_end   = start
+
+    elif type == "custom":
+        if not start_date or not end_date:
+            raise HTTPException(status_code=422, detail="start_date and end_date required")
+        try:
+            start = datetime.fromisoformat(start_date)
+            end   = datetime.fromisoformat(end_date) + timedelta(days=1)
+        except ValueError:
+            raise HTTPException(status_code=422, detail="Dates must be YYYY-MM-DD")
+        delta = end - start
+        prev_start = start - delta
+        prev_end   = start
+
+    else:
+        start = datetime(2000, 1, 1)
+        end   = datetime(2100, 1, 1)
+        prev_start = datetime(2000, 1, 1)
+        prev_end   = start
+        ptd_applies = False
+
+    # M3 FIX: period-to-date comparison (same as /average-bill)
+    if ptd_applies:
+        effective_end = end if end < now else now
+        elapsed = max(effective_end - start, timedelta(0))
+        prev_end = prev_start + elapsed
+
+    # ── KPIs ──────────────────────────────────────────────────────────────────
+    current = db.query(
+        func.sum(Bill.final_amount),
+        func.count(Bill.id),
+        func.avg(Bill.final_amount)
+    ).filter(
+        *_bill_filters(current_shop.id),
+        Bill.created_at >= start,
+        Bill.created_at < end
+    ).first()
+
+    previous = db.query(
+        func.sum(Bill.final_amount),
+        func.count(Bill.id),
+        func.avg(Bill.final_amount)
+    ).filter(
+        *_bill_filters(current_shop.id),
+        Bill.created_at >= prev_start,
+        Bill.created_at < prev_end
+    ).first()
+
+    ret_cur  = _returns_total(db, current_shop.id, start=start, end=end)
+    ret_prev = _returns_total(db, current_shop.id, start=prev_start, end=prev_end)
+
+    # ── Cancelled bills in this period ────────────────────────────────────────
+    cancelled = db.query(
+        func.count(Bill.id),
+        func.coalesce(func.sum(Bill.final_amount), 0.0)
+    ).filter(
+        Bill.shop_id == current_shop.id,
+        Bill.is_cancelled == True,
+        Bill.cancelled_at >= start,
+        Bill.cancelled_at < end
+    ).first()
+
+    # ── Payment split for active bills in this period ─────────────────────────
+    pay_rows = db.query(
+        Bill.payment_method,
+        func.count(Bill.id),
+        func.sum(Bill.final_amount)
+    ).filter(
+        *_bill_filters(current_shop.id),
+        Bill.created_at >= start,
+        Bill.created_at < end
+    ).group_by(Bill.payment_method).all()
+
+    gross_rev = float(current[0] or 0)
+    pay_split = []
+    for row in pay_rows:
+        method_rev = float(row[2] or 0)
+        pct = round((method_rev / gross_rev * 100) if gross_rev > 0 else 0)
+        pay_split.append({
+            "method":  row[0] or "Cash",
+            "bills":   int(row[1] or 0),
+            "revenue": method_rev,
+            "percent": pct,
+        })
+    pay_split.sort(key=lambda x: x["revenue"], reverse=True)
+
+    # ── 7-day sparkline (always last 7 calendar days, net of returns) ─────────
+    spark_start = datetime(now.year, now.month, now.day) - timedelta(days=6)
+    spark_rows = db.query(
+        func.date(Bill.created_at),
+        func.sum(Bill.final_amount)
+    ).filter(
+        *_bill_filters(current_shop.id),
+        Bill.created_at >= spark_start
+    ).group_by(func.date(Bill.created_at)).all()
+
+    spark_map  = {str(r[0]): float(r[1] or 0) for r in spark_rows}
+    spark_rmap = _returns_map(db, current_shop.id, func.date, start=spark_start)
+    for d, amt in spark_rmap.items():
+        key = str(d)
+        spark_map[key] = spark_map.get(key, 0.0) - amt
+
+    sparkline = [
+        spark_map.get(str((spark_start + timedelta(days=i)).date()), 0.0)
+        for i in range(7)
+    ]
+
+    return {
+        "total_revenue":    float(current[0] or 0) - ret_cur,
+        "total_bills":      int(current[1] or 0),
+        "average_bill":     float(current[2] or 0),
+        "returns_total":    ret_cur,
+        "cancelled_count":  int(cancelled[0] or 0),
+        "cancelled_amount": float(cancelled[1] or 0),
+        "payment_split":    pay_split,
+        "sparkline":        sparkline,
+        "prev_revenue":     float(previous[0] or 0) - ret_prev,
+        "prev_bills":       int(previous[1] or 0),
+        "prev_avg":         float(previous[2] or 0),
+    }
+
+
 # ================= INTERNAL HELPERS =================
 
 def get_daily_report(db, current_shop, start, end):
