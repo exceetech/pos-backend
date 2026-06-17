@@ -523,8 +523,15 @@ def peak_hours(
 
     elif type == "month":
 
-        start = now - timedelta(days=30)
-        end = now
+        # Calendar month (1st → next 1st), matching /average-bill and
+        # /overview. Was a rolling 30-day window, so peak-hours totals did
+        # not reconcile with the revenue KPI under the same "Month" chip.
+        start = datetime(now.year, now.month, 1)
+        end = (
+            datetime(now.year + 1, 1, 1)
+            if now.month == 12
+            else datetime(now.year, now.month + 1, 1)
+        )
 
         query = query.filter(
             Bill.created_at >= start,
@@ -533,8 +540,10 @@ def peak_hours(
 
     elif type == "year":
 
-        start = now - timedelta(days=365)
-        end = now
+        # Calendar year (Jan 1 → next Jan 1), matching the KPI endpoints.
+        # Was a rolling 365-day window.
+        start = datetime(now.year, 1, 1)
+        end = datetime(now.year + 1, 1, 1)
 
         query = query.filter(
             Bill.created_at >= start,
@@ -649,7 +658,12 @@ def average_bill(
         else:
             end = datetime(now.year, now.month + 1, 1)
 
-        prev_start = start - (end - start)
+        # Anchor to the FIRST day of the previous calendar month, the same
+        # way the year branch anchors to the previous calendar year.
+        # Using start-(end-start) subtracted the *current* month's length
+        # and drifted the comparison window by ±1–3 days across 28/31-day
+        # months. The M3 cap below still trims prev_end to elapsed duration.
+        prev_start = (start - timedelta(days=1)).replace(day=1)
         prev_end = start
 
     elif type == "year":
@@ -1082,7 +1096,8 @@ def overview(
     elif type == "month":
         start = datetime(now.year, now.month, 1)
         end   = datetime(now.year + 1, 1, 1) if now.month == 12 else datetime(now.year, now.month + 1, 1)
-        prev_start = start - (end - start)
+        # First day of previous calendar month (see /average-bill note).
+        prev_start = (start - timedelta(days=1)).replace(day=1)
         prev_end   = start
 
     elif type == "year":
