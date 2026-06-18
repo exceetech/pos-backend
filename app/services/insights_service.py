@@ -2,6 +2,7 @@ import os
 from datetime import datetime, timedelta
 from sqlalchemy.orm import Session
 from sqlalchemy import func, extract
+from app.util.ai_cache import insights_cache as _insights_cache
 from app.models.inventory import Inventory
 from app.models.bill import Bill
 from app.models.bill_items import BillItem
@@ -12,7 +13,16 @@ from app.models.purchase_return import PurchaseReturn
 from app.models.credit_note import CreditNote
 from app.models.customer import Customer
 
+# Python weekday order (0=Mon .. 6=Sun) for day-of-week insight labels.
+_WEEKDAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
+
+
+# Per-shop insight cache lives in app.util.ai_cache (shared with the route + invalidation).
 def generate_structured_insights(db: Session, shop_id: int):
+    cached = _insights_cache.get(shop_id)
+    if cached is not None:
+        return cached
+
     insights = []
     now = datetime.now()
     today_dt = now
@@ -43,22 +53,31 @@ def generate_structured_insights(db: Session, shop_id: int):
         })
 
     # 2. High-Risk Credit Defaulters (Fire)
-    stale_credit_accounts = db.query(CreditAccount).filter(
+    # Latest transaction date per account in ONE grouped query, then left-join the
+    # accounts — avoids the previous N+1 (a query per credit account).
+    last_tx_subq = db.query(
+        CreditTransaction.account_id.label("account_id"),
+        func.max(CreditTransaction.created_at).label("last_tx_at")
+    ).group_by(CreditTransaction.account_id).subquery()
+
+    stale_credit_accounts = db.query(
+        CreditAccount.due_amount.label("due_amount"),
+        last_tx_subq.c.last_tx_at
+    ).outerjoin(
+        last_tx_subq, last_tx_subq.c.account_id == CreditAccount.id
+    ).filter(
         CreditAccount.shop_id == shop_id,
         CreditAccount.due_amount > 0,
         CreditAccount.is_active == True
     ).all()
-    
+
     defaulters_count = 0
     trapped_credit = 0.0
-    for acc in stale_credit_accounts:
-        last_tx = db.query(CreditTransaction).filter(
-            CreditTransaction.account_id == acc.id
-        ).order_by(CreditTransaction.created_at.desc()).first()
-        
-        if not last_tx or (last_tx.created_at and last_tx.created_at.replace(tzinfo=None) < thirty_days_ago):
+    for row in stale_credit_accounts:
+        last_tx_at = row.last_tx_at
+        if last_tx_at is None or (last_tx_at.replace(tzinfo=None) < thirty_days_ago):
             defaulters_count += 1
-            trapped_credit += acc.due_amount
+            trapped_credit += row.due_amount
 
     if defaulters_count > 0:
         insights.append({
@@ -502,11 +521,21 @@ def generate_structured_insights(db: Session, shop_id: int):
             })
 
     # 24. Weekend vs. Weekday Shift
-    all_bills_30 = db.query(Bill.final_amount, Bill.created_at).filter(
+    # Per-weekday revenue + bill count in ONE grouped query instead of loading every
+    # bill into memory (audit M5). extract('dow'): 0=Sunday .. 6=Saturday.
+    _bill_dow = extract('dow', Bill.created_at)
+    dow_rows = db.query(
+        _bill_dow.label("dow"),
+        func.sum(Bill.final_amount).label("rev"),
+        func.count(Bill.id).label("cnt")
+    ).filter(
         Bill.shop_id == shop_id, Bill.created_at >= thirty_days_ago, Bill.active == True
-    ).all()
-    weekend_rev = sum(b.final_amount for b in all_bills_30 if b.created_at.weekday() >= 5)
-    total_rev = sum(b.final_amount for b in all_bills_30)
+    ).group_by(_bill_dow).all()
+
+    rev_by_dow = {int(r.dow): float(r.rev or 0) for r in dow_rows}
+    cnt_by_dow = {int(r.dow): int(r.cnt or 0) for r in dow_rows}
+    total_rev = sum(rev_by_dow.values())
+    weekend_rev = rev_by_dow.get(0, 0.0) + rev_by_dow.get(6, 0.0)  # Sunday + Saturday
     if total_rev > 10000 and weekend_rev > (total_rev * 0.5):
         insights.append({
             "type": "gold",
@@ -527,7 +556,7 @@ def generate_structured_insights(db: Session, shop_id: int):
         Bill.shop_id == shop_id, Bill.created_at >= thirty_days_ago, Bill.active == True
     ).group_by(BillItem.shop_product_id, BillItem.product_name).having(
         func.sum(BillItem.quantity) > 50,
-        func.sum(calc_profit) / func.sum(BillItem.quantity * BillItem.price) < 0.05
+        func.sum(calc_profit) / func.nullif(func.sum(BillItem.line_subtotal), 0) < 0.05
     ).limit(1).first()
 
     if vol_drivers:
@@ -551,7 +580,7 @@ def generate_structured_insights(db: Session, shop_id: int):
     ).group_by(BillItem.shop_product_id, BillItem.product_name).having(
         func.sum(BillItem.quantity) > 0,
         func.sum(BillItem.quantity) < 5,
-        func.sum(calc_profit) / func.sum(BillItem.quantity * BillItem.price) > 0.4
+        func.sum(calc_profit) / func.nullif(func.sum(BillItem.line_subtotal), 0) > 0.4
     ).limit(1).first()
 
     if slow_movers:
@@ -717,17 +746,17 @@ def generate_structured_insights(db: Session, shop_id: int):
         })
 
     # 37. Best Day to Restock (Lowest Sales Day)
-    # Use python mapping
-    day_counts = [0]*7
-    for b in all_bills_30:
-        day_counts[b.created_at.weekday()] += 1
-    if total_rev > 5000:
+    # Reuse the grouped per-weekday counts (M5). day_counts indexed by Python weekday
+    # (0=Mon..6=Sun); dow 0=Sun maps to index 6, dow 1=Mon to index 0, etc.
+    day_counts = [cnt_by_dow.get((py_wd + 1) % 7, 0) for py_wd in range(7)]
+    # Only surface when there's a genuinely quiet day (clearly below the busiest), so this
+    # low-signal "gold" doesn't always appear and crowd the top-3 (audit B8).
+    if total_rev > 5000 and max(day_counts) > 0 and min(day_counts) < max(day_counts) * 0.6:
         lowest_day_idx = day_counts.index(min(day_counts))
-        days_str = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
         insights.append({
             "type": "gold",
             "title": "Best Day to Restock",
-            "description": f"Historically, {days_str[lowest_day_idx]} is your quietest day. Use this time to restock and clean.",
+            "description": f"Historically, {_WEEKDAYS[lowest_day_idx]} is your quietest day. Use this time to restock and clean.",
             "actionText": "View Purchases",
             "actionType": "VIEW_PURCHASES"
         })
@@ -788,18 +817,23 @@ def generate_structured_insights(db: Session, shop_id: int):
         })
 
     # 42. Peak Return Days
-    all_returns_30 = db.query(CreditNote.created_at).filter(
+    # Returns per weekday grouped in SQL instead of loading every credit note (M5).
+    _ret_dow = extract('dow', CreditNote.created_at)
+    rday_rows = db.query(
+        _ret_dow.label("dow"),
+        func.count(CreditNote.id).label("cnt")
+    ).filter(
         CreditNote.shop_id == shop_id, CreditNote.created_at >= thirty_days_ago
-    ).all()
-    if len(all_returns_30) > 5:
-        rday_counts = [0]*7
-        for r in all_returns_30:
-            rday_counts[r[0].weekday()] += 1
+    ).group_by(_ret_dow).all()
+    total_returns = sum(int(r.cnt or 0) for r in rday_rows)
+    if total_returns > 5:
+        rcnt_by_dow = {int(r.dow): int(r.cnt or 0) for r in rday_rows}
+        rday_counts = [rcnt_by_dow.get((py_wd + 1) % 7, 0) for py_wd in range(7)]
         peak_rday_idx = rday_counts.index(max(rday_counts))
         insights.append({
             "type": "leak",
             "title": "Peak Return Day",
-            "description": f"Historically, {days_str[peak_rday_idx]} has the highest number of customer returns.",
+            "description": f"Historically, {_WEEKDAYS[peak_rday_idx]} has the highest number of customer returns.",
             "actionText": "View Dashboard",
             "actionType": "VIEW_DASHBOARD"
         })
@@ -854,15 +888,11 @@ def generate_structured_insights(db: Session, shop_id: int):
             "actionType": "VIEW_INVENTORY"
         })
 
-    # 47. Supplier Payment Cycle Deficit
-    # Comparing payment terms...
-    insights.append({
-        "type": "fire",
-        "title": "Credit Payment Deficit",
-        "description": f"Your pending supplier credit (₹{unpaid_purchases:,.2f}) is aging. Delaying payments might impact supplier relations.",
-        "actionText": "View Purchases",
-        "actionType": "VIEW_PURCHASES"
-    })
+    # 47. (removed — audit B8) This appended a "fire" unconditionally and duplicated
+    #     #17 "Unpaid Supplier Bills" (same `unpaid_purchases` metric). Being an always-on
+    #     fire, it crowded out genuinely higher-signal items within the top-3 cap, and showed
+    #     a nonsensical "₹0.00 is aging" when there were no credit purchases. #17 already
+    #     surfaces aging supplier credit (> ₹5,000).
 
     # 48. Micro-Transaction Dominance
     micro_bills = db.query(func.count(Bill.id)).filter(
@@ -910,4 +940,14 @@ def generate_structured_insights(db: Session, shop_id: int):
     # Priority: Fire -> Leak -> Gold
     # ---------------------------------------------------------
     insights.sort(key=lambda x: {"fire": 0, "leak": 1, "gold": 2}.get(x["type"], 3))
-    return insights[:3]
+    # De-duplicate by title (a few checks can produce near-identical cards), keep order,
+    # and return all that apply (capped) so the app can show the full grouped list.
+    seen = set()
+    result = []
+    for ins in insights:
+        if ins["title"] not in seen:
+            seen.add(ins["title"])
+            result.append(ins)
+    result = result[:25]
+    _insights_cache.set(shop_id, result)
+    return result

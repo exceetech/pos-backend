@@ -4,6 +4,9 @@ from app.database import engine, Base
 
 from app.models import *
 
+# Registers SQLAlchemy listeners that auto-invalidate the AI caches on relevant writes.
+from app.util import ai_cache_hooks  # noqa: F401
+
 from app.routes import auth_routes, profit_routes, sales_routes
 from app.routes import product_routes
 from app.routes import bill_routes
