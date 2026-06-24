@@ -12,6 +12,7 @@ reports.
 from sqlalchemy import BigInteger, Column, Integer, String, Float, DateTime, ForeignKey, Index
 from datetime import datetime
 from app.database import Base
+from app.util.time_utils import local_now
 
 
 class PurchaseReturn(Base):
@@ -19,6 +20,10 @@ class PurchaseReturn(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     shop_id = Column(Integer, ForeignKey("shops.id"), nullable=False, index=True)
+
+    # Android-side row id — idempotency key for /purchase-returns/sync so a
+    # retried push (lost response) can't insert a duplicate debit note.
+    local_id = Column(Integer, nullable=True, index=True)
 
     # Optional FK to the shop_product for joinable reports — left
     # nullable because offline rows may not yet have a server id
@@ -50,7 +55,7 @@ class PurchaseReturn(Base):
     is_credit = Column(Integer, nullable=False, default=0)
     credit_account_id = Column(Integer, ForeignKey("credit_accounts.id"), nullable=True)
 
-    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    created_at = Column(DateTime, default=local_now, nullable=False)
 
     # ── Debit/Credit Note fields (v25+) ──────────────────────────────────
     #

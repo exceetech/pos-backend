@@ -1,6 +1,8 @@
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 from datetime import datetime, timedelta
+import math
+from app.util.time_utils import utc_now, utc_to_epoch_ms
 
 from app.database import get_db
 from app.dependencies import get_current_shop
@@ -30,11 +32,14 @@ def get_subscription(
             "expiry_date": None
         }
 
-    remaining_days = (sub.expiry_date - datetime.utcnow()).days
+    # Ceil so 23h-left reads as 1 day (not 0/'expired') — off-by-a-day fix.
+    remaining_days = math.ceil((sub.expiry_date - utc_now()).total_seconds() / 86400)
 
     return {
         "plan": sub.plan,
         "expiry_date": sub.expiry_date,
+        # UTC instant so the device can render it in the shop timezone.
+        "expiry_ms": utc_to_epoch_ms(sub.expiry_date) if sub.expiry_date else None,
         "remaining_days": max(remaining_days, 0),
         "status": "active" if remaining_days > 0 else "expired"
     }
@@ -56,7 +61,7 @@ def admin_activate_subscription(
     else:
         return {"error": "Invalid plan"}
 
-    start = datetime.utcnow()
+    start = utc_now()
     expiry = start + timedelta(days=duration)
 
     # 🔍 Get shop (NEW)

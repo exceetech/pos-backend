@@ -15,6 +15,7 @@ reports never have to un-bake tax. Idempotent on `(shop_id, local_id)`.
 from sqlalchemy import Column, Integer, Float, String, ForeignKey, DateTime
 from datetime import datetime
 from app.database import Base
+from app.util.time_utils import local_now
 
 
 class PurchaseBatch(Base):
@@ -49,4 +50,4 @@ class PurchaseBatch(Base):
     taxable_value = Column(Float, default=0.0)
 
     invoice_date = Column(DateTime, nullable=True)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=local_now)

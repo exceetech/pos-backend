@@ -26,6 +26,7 @@ from sqlalchemy.orm import relationship
 from datetime import datetime
 
 from app.database import Base
+from app.util.time_utils import local_now
 
 
 class GstSalesInvoice(Base):
@@ -61,7 +62,7 @@ class GstSalesInvoice(Base):
     total_tax = Column(Float, nullable=False, default=0.0)
     grand_total = Column(Float, nullable=False, default=0.0)
 
-    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    created_at = Column(DateTime, default=local_now, nullable=False)
 
     # ── GSTR-1 fields (v23) ──────────────────────────────────────────
 

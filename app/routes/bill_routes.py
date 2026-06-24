@@ -10,7 +10,7 @@ from app.models.global_products import GlobalProduct
 from app.models.billing_settings import BillingSettings
 
 from app.schemas.bill_schema import CreateBillRequest, CancelBillRequest
-from app.util.time_utils import APP_TZ, local_now
+from app.util.time_utils import APP_TZ, local_now, local_to_epoch_ms, utc_to_epoch_ms, epoch_ms_to_utc
 from app.dependencies import get_current_shop
 from app.models.gst_profile import StoreGstProfile
 from app.services.gst_service import normalize_customer_state, extract_state_code
@@ -332,7 +332,7 @@ def create_bill(
 
 # ================= GET SINGLE BILL =================
 
-@router.get("/{bill_id}")
+@router.get("/{bill_id:int}")
 def get_bill(
     bill_id: int,
     db: Session = Depends(get_db),
@@ -387,6 +387,103 @@ def get_bill(
 
 
 # ================= GET ALL BILLS =================
+
+@router.get("/cancellations")
+def get_bill_cancellations(
+    updated_since: int = 0,
+    db: Session = Depends(get_db),
+    current_shop = Depends(get_current_shop)
+):
+    """Propagate voids across terminals (Sync re-audit, cancellation propagation).
+    Returns bills cancelled since the cursor, keyed on the server-set `updated_at`
+    (cancelled_at is client-supplied, so it can't be a safe cursor). `>=` so
+    same-instant rows aren't skipped; the client mark is idempotent."""
+    from datetime import datetime as _dt
+
+    q = db.query(Bill).filter(
+        Bill.shop_id == current_shop.id,
+        Bill.is_cancelled == True,
+    )
+    if updated_since > 0:
+        q = q.filter(Bill.updated_at >= epoch_ms_to_utc(updated_since))
+
+    rows = q.order_by(Bill.updated_at).all()
+    return [
+        {
+            "bill_number": b.bill_number,
+            "cancelled_at": local_to_epoch_ms(b.cancelled_at) if b.cancelled_at else None,
+            "updated_at": utc_to_epoch_ms(b.updated_at) if b.updated_at else None,
+        }
+        for b in rows
+    ]
+
+
+@router.get("/since")
+def get_bills_since(
+    after_id: int = 0,
+    db: Session = Depends(get_db),
+    current_shop = Depends(get_current_shop)
+):
+    """Delta pull of full bills + tax-complete items for cross-terminal mirroring
+    (Sync re-audit R3). Append-only `id` cursor: returns bills with id > after_id
+    so a second terminal can reprint and run accurate returns on a bill created
+    elsewhere. after_id=0 returns all (first sync)."""
+    from collections import defaultdict
+
+    bills = db.query(Bill).filter(
+        Bill.shop_id == current_shop.id,
+        Bill.id > after_id,
+        or_(Bill.active == True, Bill.is_cancelled == True),
+    ).order_by(Bill.id).all()
+
+    bill_ids = [b.id for b in bills]
+    items_by_bill = defaultdict(list)
+    if bill_ids:
+        for it in db.query(BillItem).filter(BillItem.bill_id.in_(bill_ids)).all():
+            items_by_bill[it.bill_id].append(it)
+
+    return [
+        {
+            "bill_id": b.id,
+            "bill_number": b.bill_number,
+            "subtotal": b.subtotal,
+            "discount_amount": b.discount_amount,
+            "gst_amount": b.gst_amount,
+            "final_amount": b.final_amount,
+            "payment_method": b.payment_method,
+            "invoice_type": b.invoice_type or "B2C",
+            "customer_state": b.customer_state,
+            "customer_state_code": b.customer_state_code,
+            "supply_type": b.supply_type,
+            "cgst_amount": b.cgst_amount,
+            "sgst_amount": b.sgst_amount,
+            "igst_amount": b.igst_amount,
+            "is_cancelled": bool(b.is_cancelled),
+            "cancelled_at": local_to_epoch_ms(b.cancelled_at) if b.cancelled_at else None,
+            "created_at": str(b.created_at),
+            "items": [
+                {
+                    "shop_product_id": it.shop_product_id,
+                    "product_name": it.product_name,
+                    "variant": it.variant,
+                    "unit": it.unit,
+                    "quantity": it.quantity,
+                    "unit_price": it.unit_price,
+                    "line_subtotal": it.line_subtotal,
+                    "taxable_amount": it.taxable_amount,
+                    "gst_rate": it.gst_rate,
+                    "cgst_amount": it.cgst_amount,
+                    "sgst_amount": it.sgst_amount,
+                    "igst_amount": it.igst_amount,
+                    "total_amount": it.total_amount,
+                    "hsn_code": it.hsn_code,
+                }
+                for it in items_by_bill.get(b.id, [])
+            ],
+        }
+        for b in bills
+    ]
+
 
 @router.get("")
 def get_bills(

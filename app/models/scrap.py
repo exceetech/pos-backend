@@ -10,6 +10,7 @@ the row-level intent stays clear.
 from sqlalchemy import Column, Integer, String, Float, DateTime, ForeignKey
 from datetime import datetime
 from app.database import Base
+from app.util.time_utils import local_now
 
 
 class Scrap(Base):
@@ -40,4 +41,4 @@ class Scrap(Base):
 
     reason = Column(String, nullable=False, default="Scrap")
 
-    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    created_at = Column(DateTime, default=local_now, nullable=False)

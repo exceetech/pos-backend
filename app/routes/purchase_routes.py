@@ -4,12 +4,12 @@ from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import IntegrityError
 from datetime import datetime
+from app.util.time_utils import epoch_ms_to_local, local_to_epoch_ms, utc_to_epoch_ms, epoch_ms_to_utc
 
 from app.database import get_db
 from app.dependencies import get_current_shop
 from app.models.purchase import Purchase
 from app.models.purchase_item import PurchaseItem
-from app.models.purchase_batch import PurchaseBatch
 from app.models.credit import CreditAccount
 from app.models.shop_products import ShopProduct
 from app.models.global_products import GlobalProduct
@@ -137,7 +137,7 @@ def sync_purchases(
                 purchase.igst_amount = p.igst_amount
                 purchase.invoice_value = p.invoice_value
                 purchase.invoice_date = (
-                    datetime.utcfromtimestamp(p.invoice_date / 1000)
+                    epoch_ms_to_local(p.invoice_date)
                     if p.invoice_date else None
                 )
                 purchase.is_credit = 1 if p.is_credit else 0
@@ -175,7 +175,7 @@ def sync_purchases(
                     igst_amount=p.igst_amount,
                     invoice_value=p.invoice_value,
                     invoice_date=(
-                        datetime.utcfromtimestamp(p.invoice_date / 1000)
+                        epoch_ms_to_local(p.invoice_date)
                         if p.invoice_date else None
                     ),
                     is_credit=1 if p.is_credit else 0,
@@ -191,7 +191,7 @@ def sync_purchases(
                     availed_itc_state_tax=p.availed_itc_state_tax,
                     availed_itc_cess=p.availed_itc_cess,
                     purchase_source=p.purchase_source,
-                    created_at=datetime.utcfromtimestamp(p.created_at / 1000)
+                    created_at=epoch_ms_to_local(p.created_at)
                 )
                 db.add(purchase)
 
@@ -301,34 +301,16 @@ def sync_purchases(
                     )
                 )
 
-                # ✅ Auto-create PurchaseBatch for Hybrid Inventory
-                if resolved_product_id:
-                    unit_cost = (item.taxable_amount / item.quantity) if item.quantity > 0 else 0.0
-                    gst_pct = item.purchase_cgst_percentage + item.purchase_sgst_percentage + item.purchase_igst_percentage
-
-                    db.add(
-                        PurchaseBatch(
-                            shop_id=current_shop.id,
-                            local_id=item.local_id,
-                            product_id=resolved_product_id,
-                            purchase_invoice_id=purchase.id,
-                            supplier_name=p.supplier_name,
-                            supplier_gstin=p.supplier_gstin,
-                            invoice_number=p.invoice_number,
-                            batch_code=p.invoice_number,
-                            quantity_purchased=item.quantity,
-                            quantity_remaining=item.quantity,
-                            unit_cost_excluding_tax=unit_cost,
-                            gst_percent=gst_pct,
-                            cgst_percent=item.purchase_cgst_percentage,
-                            sgst_percent=item.purchase_sgst_percentage,
-                            igst_percent=item.purchase_igst_percentage,
-                            invoice_value=item.invoice_value,
-                            taxable_value=item.taxable_amount,
-                            invoice_date=purchase.invoice_date,
-                            created_at=purchase.created_at
-                        )
-                    )
+                # NOTE: purchase_batches are NOT auto-created here.
+                # The Android client is the single source of truth for batches
+                # (it owns FIFO consumption, weighted-average valuation and the
+                # batch picker) and pushes authoritative rows via
+                # POST /purchase-batches/sync. Auto-creating a second batch from
+                # the purchase item here produced a DUPLICATE per line — with a
+                # different local_id (item id vs batch id), so the
+                # (shop_id, local_id) idempotency never collapsed them — and the
+                # two copies disagreed on unit cost / gst_percent, corrupting COGS.
+                # See purchase_batch_routes.py for the authoritative upsert.
 
             purchase_id_map[str(p.local_id)] = purchase.id
             success_count += 1
@@ -356,12 +338,17 @@ def sync_purchases(
 
 @router.get("/my")
 def get_my_purchases(
+    updated_since: int = 0,
     db: Session = Depends(get_db),
     current_shop = Depends(get_current_shop)
 ):
-    purchases = db.query(Purchase).filter(
-        Purchase.shop_id == current_shop.id
-    ).all()
+    # Delta pull (Sync audit S5): `>=` so same-instant batch rows aren't skipped;
+    # updated_since=0 (default / old clients) returns everything.
+    pq = db.query(Purchase).filter(Purchase.shop_id == current_shop.id)
+    if updated_since > 0:
+        from datetime import datetime as _dt
+        pq = pq.filter(Purchase.updated_at >= epoch_ms_to_utc(updated_since))
+    purchases = pq.all()
 
     response = []
     for p in purchases:
@@ -416,10 +403,11 @@ def get_my_purchases(
             "sgst_amount": p.sgst_amount,
             "igst_amount": p.igst_amount,
             "invoice_value": p.invoice_value,
-            "invoice_date": int(p.invoice_date.timestamp() * 1000) if p.invoice_date else None,
+            "invoice_date": local_to_epoch_ms(p.invoice_date) if p.invoice_date else None,
             "is_credit": p.is_credit == 1,
             "credit_account_id": p.credit_account_id,
-            "created_at": int(p.created_at.timestamp() * 1000) if p.created_at else None,
+            "created_at": local_to_epoch_ms(p.created_at) if p.created_at else None,
+            "updated_at": utc_to_epoch_ms(p.updated_at) if p.updated_at else None,
             "place_of_supply_code": p.place_of_supply_code,
             "reverse_charge": p.reverse_charge,
             "invoice_type": p.invoice_type,

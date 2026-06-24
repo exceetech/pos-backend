@@ -1,4 +1,5 @@
 from datetime import datetime
+from app.util.time_utils import utc_now
 from sqlalchemy.orm import Session
 from app.models.subscription import Subscription
 from app.models.shop import Shop
@@ -12,7 +13,7 @@ def check_subscriptions(db: Session):
 
     for sub in subs:
 
-        days_left = (sub.expiry_date - datetime.utcnow()).days
+        days_left = (sub.expiry_date - utc_now()).days
 
         # 🔍 Get shop
         shop = db.query(Shop).filter(Shop.id == sub.shop_id).first()

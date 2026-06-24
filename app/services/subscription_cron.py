@@ -1,4 +1,5 @@
 from datetime import datetime
+from app.util.time_utils import utc_now
 from app.database import SessionLocal
 from app.models.subscription import Subscription
 
@@ -34,7 +35,7 @@ def check_subscriptions():
 
     for sub in subs:
 
-        days_left = (sub.expiry_date - datetime.utcnow()).days
+        days_left = (sub.expiry_date - utc_now()).days
 
         if days_left in [30, 15, 10, 5, 1]:
             send_email("your_email_here", days_left)

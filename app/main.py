@@ -134,6 +134,68 @@ def _add_credit_columns_to_purchases() -> None:
                 conn.execute(text(sql))
         conn.commit()
 
+def _add_sync_idempotency_columns() -> None:
+    """Idempotency keys for offline-replay dedupe (Sync audit S2):
+       • purchase_returns.local_id  — dedupe debit-note pushes on (shop_id, local_id)
+       • inventory_logs.client_uid  — dedupe inventory pushes on a stable client key
+       Idempotent; safe on fresh DBs (create_all already added it) and repeats."""
+    from sqlalchemy import inspect, text
+    targets = {
+        "purchase_returns": ("local_id",
+            "ALTER TABLE purchase_returns ADD COLUMN local_id INTEGER NULL"),
+        "inventory_logs": ("client_uid",
+            "ALTER TABLE inventory_logs ADD COLUMN client_uid VARCHAR NULL"),
+    }
+    with engine.connect() as conn:
+        inspector = inspect(engine)
+        for table, (col, sql) in targets.items():
+            existing = {c["name"] for c in inspector.get_columns(table)}
+            if col not in existing:
+                conn.execute(text(sql))
+        conn.commit()
+
+try:
+    _add_sync_idempotency_columns()
+except Exception as e:  # pragma: no cover — never crash startup
+    print(f"[startup] sync idempotency migration skipped: {e}")
+
+
+def _add_delta_cursor_columns() -> None:
+    """Server-set updated_at cursors for delta pulls (Sync audit S5).
+
+    Adds the column, then backfills existing rows to the current time so a
+    first delta pull (updated_since=0) still returns them — without a backfill,
+    NULL updated_at would be excluded by the `>=` filter and rows would vanish.
+    CURRENT_TIMESTAMP works on SQLite and Postgres. Idempotent."""
+    from sqlalchemy import inspect, text
+    specs = [
+        ("inventory", "updated_at",
+         "ALTER TABLE inventory ADD COLUMN updated_at TIMESTAMP NULL",
+         "UPDATE inventory SET updated_at = CURRENT_TIMESTAMP WHERE updated_at IS NULL"),
+        ("purchases", "updated_at",
+         "ALTER TABLE purchases ADD COLUMN updated_at TIMESTAMP NULL",
+         "UPDATE purchases SET updated_at = COALESCE(created_at, CURRENT_TIMESTAMP) "
+         "WHERE updated_at IS NULL"),
+        ("bills", "updated_at",
+         "ALTER TABLE bills ADD COLUMN updated_at TIMESTAMP NULL",
+         "UPDATE bills SET updated_at = COALESCE(created_at, CURRENT_TIMESTAMP) "
+         "WHERE updated_at IS NULL"),
+    ]
+    with engine.connect() as conn:
+        inspector = inspect(engine)
+        for table, col, add_sql, backfill_sql in specs:
+            existing = {c["name"] for c in inspector.get_columns(table)}
+            if col not in existing:
+                conn.execute(text(add_sql))
+                conn.execute(text(backfill_sql))
+        conn.commit()
+
+try:
+    _add_delta_cursor_columns()
+except Exception as e:  # pragma: no cover — never crash startup
+    print(f"[startup] delta cursor migration skipped: {e}")
+
+
 try:
     _add_credit_columns_to_purchases()
 except Exception as e:  # pragma: no cover

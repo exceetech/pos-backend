@@ -10,6 +10,7 @@ All writes are scoped to the authenticated shop — the
 never trusted blindly.
 """
 from datetime import datetime
+from app.util.time_utils import epoch_ms_to_local, local_now
 from typing import List
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -39,12 +40,13 @@ router = APIRouter(prefix="/gst-sales", tags=["GST Sales Invoices"])
 # --------------------------------------------------------------------
 
 def _epoch_ms_to_dt(ms: int | None) -> datetime:
+    # Event time (created_at / cancelled_at) -> shop-local wall clock (Bucket A).
     if not ms:
-        return datetime.utcnow()
+        return local_now()
     try:
-        return datetime.utcfromtimestamp(ms / 1000)
+        return epoch_ms_to_local(ms)
     except (ValueError, OSError):
-        return datetime.utcnow()
+        return local_now()
 
 
 def _cancel_matching_bill(db: Session, shop_id: int,
@@ -66,7 +68,7 @@ def _cancel_matching_bill(db: Session, shop_id: int,
     ).first()
     if bill and not bill.is_cancelled:
         bill.is_cancelled = True
-        bill.cancelled_at = cancelled_dt or datetime.utcnow()
+        bill.cancelled_at = cancelled_dt or local_now()
         bill.active = False
 
 
@@ -396,7 +398,7 @@ def cancel_gst_sales_invoice(
         )
 
     cancelled_dt = (
-        _epoch_ms_to_dt(payload.cancelled_at) if payload.cancelled_at else datetime.utcnow()
+        _epoch_ms_to_dt(payload.cancelled_at) if payload.cancelled_at else local_now()
     )
     invoice.is_cancelled = True
     invoice.cancelled_at = cancelled_dt

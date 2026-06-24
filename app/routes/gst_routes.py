@@ -5,6 +5,7 @@ Prefix: /gst
 
 import httpx
 from datetime import datetime
+from app.util.time_utils import local_now, utc_now
 from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
@@ -107,7 +108,7 @@ def upsert_gst_profile(
 
         existing.sync_status = "synced"
         existing.device_id = data.device_id or existing.device_id
-        existing.updated_at = datetime.utcnow()
+        existing.updated_at = utc_now()
 
         db.commit()
         db.refresh(existing)
@@ -204,7 +205,7 @@ def sync_gst_sales_records(
 
         if existing:
             # Update only if incoming is newer (conflict resolution: prefer latest updated_at)
-            incoming_ts = rec.updated_at or datetime.utcnow()
+            incoming_ts = rec.updated_at or utc_now()
             if existing.updated_at and incoming_ts > existing.updated_at:
                 existing.invoice_number          = rec.invoice_number
                 existing.customer_type           = rec.customer_type
@@ -246,7 +247,7 @@ def sync_gst_sales_records(
                 existing.hsn_description         = rec.hsn_description
                 existing.is_cancelled            = rec.is_cancelled
                 existing.sync_status             = "synced"
-                existing.updated_at              = datetime.utcnow()
+                existing.updated_at              = utc_now()
                 synced += 1
             else:
                 skipped += 1
@@ -272,7 +273,7 @@ def sync_gst_sales_records(
                 total_amount=rec.total_amount,
                 sync_status="synced",
                 device_id=rec.device_id or "",
-                created_at=rec.created_at or datetime.utcnow(),
+                created_at=rec.created_at or local_now(),
                 # ── GSTR-1 enrichment fields (v23) ──
                 customer_name=rec.customer_name,
                 business_name=rec.business_name,
@@ -323,7 +324,7 @@ def sync_gst_purchase_records(
         ).first()
 
         if existing:
-            incoming_ts = rec.updated_at or datetime.utcnow()
+            incoming_ts = rec.updated_at or utc_now()
             if existing.updated_at and incoming_ts > existing.updated_at:
                 existing.supplier_gstin = rec.supplier_gstin
                 existing.invoice_number = rec.invoice_number
@@ -337,7 +338,7 @@ def sync_gst_purchase_records(
                 existing.igst_amount = rec.igst_amount
                 existing.total_amount = rec.total_amount
                 existing.sync_status = "synced"
-                existing.updated_at = datetime.utcnow()
+                existing.updated_at = utc_now()
                 synced += 1
             else:
                 skipped += 1
@@ -359,7 +360,7 @@ def sync_gst_purchase_records(
                 total_amount=rec.total_amount,
                 sync_status="synced",
                 device_id=rec.device_id or "",
-                created_at=rec.created_at or datetime.utcnow()
+                created_at=rec.created_at or local_now()
             )
             db.add(new_rec)
             synced += 1

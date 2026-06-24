@@ -3,6 +3,7 @@
 from sqlalchemy import Column, Integer, String, Float, DateTime, ForeignKey
 from datetime import datetime
 from app.database import Base
+from app.util.time_utils import local_now, utc_now
 
 
 class Purchase(Base):
@@ -49,4 +50,7 @@ class Purchase(Base):
     availed_itc_cess = Column(Float, nullable=False, default=0.0)
     purchase_source = Column(String, nullable=False, default="DOMESTIC")
 
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=local_now)
+
+    # Server-set, auto-bumped on every ORM update — delta-pull cursor (S5).
+    updated_at = Column(DateTime, default=utc_now, onupdate=utc_now)

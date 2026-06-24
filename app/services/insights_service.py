@@ -1,5 +1,6 @@
 import os
 from datetime import datetime, timedelta
+from app.util.time_utils import local_now
 from sqlalchemy.orm import Session
 from sqlalchemy import func, extract
 from app.util.ai_cache import insights_cache as _insights_cache
@@ -24,7 +25,7 @@ def generate_structured_insights(db: Session, shop_id: int):
         return cached
 
     insights = []
-    now = datetime.now()
+    now = local_now()
     today_dt = now
     thirty_days_ago = now - timedelta(days=30)
     fourteen_days_ago = now - timedelta(days=14)

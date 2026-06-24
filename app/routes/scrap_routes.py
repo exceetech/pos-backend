@@ -11,6 +11,7 @@ the scrap_entries table.
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 from datetime import datetime
+from app.util.time_utils import epoch_ms_to_local
 from typing import List
 
 from app.database import get_db
@@ -44,7 +45,7 @@ def _to_model(payload, shop_id: int) -> Scrap:
         igst_amount      = payload.igst_amount,
         state            = payload.state,
         reason           = payload.reason,
-        created_at       = datetime.utcfromtimestamp(payload.created_at / 1000),
+        created_at       = epoch_ms_to_local(payload.created_at),
     )
 
 

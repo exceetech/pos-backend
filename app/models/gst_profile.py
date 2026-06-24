@@ -2,6 +2,7 @@ import uuid
 from sqlalchemy import Column, String, DateTime, Integer, ForeignKey
 from datetime import datetime
 from app.database import Base
+from app.util.time_utils import local_now, utc_now
 
 
 def _uuid():
@@ -27,5 +28,5 @@ class StoreGstProfile(Base):
     sync_status = Column(String, default="pending")
     device_id = Column(String, default="")
 
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = Column(DateTime, default=local_now)
+    updated_at = Column(DateTime, default=utc_now, onupdate=utc_now)

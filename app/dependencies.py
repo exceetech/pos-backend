@@ -1,5 +1,6 @@
 from fastapi import Depends, HTTPException, Request
 from datetime import datetime
+from app.util.time_utils import utc_now
 from sqlalchemy.orm import Session
 
 from app.database import get_db
@@ -102,7 +103,7 @@ def get_current_shop(
         raise HTTPException(status_code=403, detail="No active subscription")
     if subscription.status != "active":
         raise HTTPException(status_code=403, detail="Subscription inactive")
-    if subscription.expiry_date < datetime.utcnow():
+    if subscription.expiry_date < utc_now():
         raise HTTPException(status_code=403, detail="Subscription expired")
 
     return shop

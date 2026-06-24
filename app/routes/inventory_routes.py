@@ -1,4 +1,5 @@
-from datetime import datetime
+from datetime import datetime, timezone
+from app.util.time_utils import epoch_ms_to_local, local_now, local_to_epoch_ms, utc_to_epoch_ms, epoch_ms_to_utc
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
@@ -43,18 +44,28 @@ def sync_inventory_logs(
         # We now check created_at to allow multiple identical transactions 
         # at different times (e.g. adding 10 units twice in a day).
         if log.date:
-            log_date = datetime.utcfromtimestamp(log.date / 1000.0)
+            log_date = epoch_ms_to_local(log.date)
         else:
-            log_date = datetime.utcnow()
+            log_date = local_now()
 
-        existing_log = db.query(InventoryLog).filter(
-            InventoryLog.shop_id == current_shop.id,
-            InventoryLog.product_id == log.product_id,
-            InventoryLog.type == log.type,
-            InventoryLog.quantity == log.quantity,
-            InventoryLog.price == log.price,
-            InventoryLog.created_at == log_date
-        ).first()
+        # Prefer the stable client idempotency key when present (Sync audit S2);
+        # it survives timestamp drift and allows genuinely-identical transactions.
+        # Fall back to the content+timestamp match for older clients.
+        client_uid = getattr(log, "client_uid", None)
+        if client_uid:
+            existing_log = db.query(InventoryLog).filter(
+                InventoryLog.shop_id == current_shop.id,
+                InventoryLog.client_uid == client_uid
+            ).first()
+        else:
+            existing_log = db.query(InventoryLog).filter(
+                InventoryLog.shop_id == current_shop.id,
+                InventoryLog.product_id == log.product_id,
+                InventoryLog.type == log.type,
+                InventoryLog.quantity == log.quantity,
+                InventoryLog.price == log.price,
+                InventoryLog.created_at == log_date
+            ).first()
 
         if existing_log:
             continue  # already synced
@@ -68,7 +79,8 @@ def sync_inventory_logs(
             type=log.type,
             quantity=log.quantity,
             price=log.price,
-            created_at=log_date
+            created_at=log_date,
+            client_uid=client_uid
         )
         db.add(db_log)
 
@@ -129,45 +141,67 @@ def sync_inventory_logs(
 
 @router.get("/my")
 def get_inventory(
+    updated_since: int = 0,
     db: Session = Depends(get_db),
     current_shop = Depends(get_current_shop)
 ):
-    inventory = db.query(Inventory).join(
+    # Delta pull (Sync audit S5): when the client sends its cursor we return only
+    # rows changed since then. `>=` (not `>`) so rows sharing the cursor's exact
+    # timestamp — common when a batch commits in the same instant — are never
+    # skipped; the client upsert dedupes the small overlap. updated_since=0
+    # (default / old clients) returns everything → backward-compatible.
+    query = db.query(Inventory).join(
         ShopProduct,
         Inventory.product_id == ShopProduct.id
     ).filter(
         Inventory.shop_id == current_shop.id,
         ShopProduct.is_active == True
-    ).all()
+    )
+
+    if updated_since > 0:
+        query = query.filter(Inventory.updated_at >= epoch_ms_to_utc(updated_since))
+
+    inventory = query.all()
 
     response = []
-
     for item in inventory:
         response.append({
             "product_id": item.product_id,
             "stock": float(item.current_stock or 0),
             "avg_cost": float(item.average_cost or 0),
-            "is_active": True
+            # Real flag, not a hardcoded True (R5) — the client maps this onto the
+            # local inventory row, so it must reflect the actual state.
+            "is_active": bool(item.is_active),
+            "updated_at": utc_to_epoch_ms(item.updated_at) if item.updated_at else None
         })
     return response
 
 
 @router.get("/logs")
 def get_inventory_logs(
+    after_id: int = 0,
     db: Session = Depends(get_db),
     current_shop = Depends(get_current_shop)
 ):
+    # Delta pull (Sync audit S5): logs are append-only and `id` is a
+    # server-monotonic autoincrement, so it's a safe cursor (event time is not —
+    # backdated rows would be skipped). after_id=0 (default / old clients) returns
+    # everything, so this stays backward-compatible.
     logs = db.query(InventoryLog).filter(
-        InventoryLog.shop_id == current_shop.id
-    ).all()
+        InventoryLog.shop_id == current_shop.id,
+        InventoryLog.id > after_id,
+    ).order_by(InventoryLog.id).all()
 
     return [
         {
+            "id": log.id,
             "product_id": log.product_id,
             "type": log.type,
             "quantity": log.quantity,
-            "price": log.price,
-            "date": int(log.created_at.timestamp() * 1000) if log.created_at else None
+            # created_at is an EVENT time stored as shop-local wall clock
+            # (Phase 1). Serialize via local_to_epoch_ms so it round-trips to the
+            # same instant the client sent, keeping content-dedupe stable (M2).
+            "date": local_to_epoch_ms(log.created_at) if log.created_at else None
         }
         for log in logs
     ]

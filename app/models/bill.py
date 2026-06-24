@@ -1,7 +1,7 @@
 from sqlalchemy import Column, Integer, Float, String, ForeignKey, DateTime, Boolean
 from datetime import datetime
 from app.database import Base
-from app.util.time_utils import local_now
+from app.util.time_utils import local_now, utc_now
 from app.models.money_type import MONEY  # R3: exact decimal for money
 
 class Bill(Base):
@@ -59,3 +59,9 @@ class Bill(Base):
 
     # H6: default in app timezone (matches device-supplied timestamps)
     created_at = Column(DateTime, default=local_now)
+
+    # Server-set, auto-bumped on every ORM update (e.g. cancellation flips
+    # is_cancelled) — a monotonic cursor for pulling cancellations to other
+    # terminals (Sync re-audit, bill-cancellation propagation). Uses UTC so the
+    # cursor is comparable regardless of the app timezone.
+    updated_at = Column(DateTime, default=utc_now, onupdate=utc_now)

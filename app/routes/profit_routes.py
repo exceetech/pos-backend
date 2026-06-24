@@ -2,6 +2,7 @@ from app.models.shop_products import ShopProduct
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 from datetime import datetime, timedelta
+from app.util.time_utils import local_now
 
 from app.database import get_db
 from app.models.sale_item import SaleItem
@@ -21,7 +22,7 @@ def get_profit(
     current_shop: Shop = Depends(get_current_shop)
 ):
 
-    now = datetime.now()
+    now = local_now()
 
     # ================= DATE FILTER =================
     def apply_date_filter(query, column):

@@ -1,6 +1,7 @@
 from sqlalchemy import Column, Integer, String, Float, ForeignKey, DateTime, Boolean
 from sqlalchemy.sql import func
 from app.database import Base
+from app.util.time_utils import local_now
 
 
 class CreditAccount(Base):
@@ -15,7 +16,7 @@ class CreditAccount(Base):
 
     shop_id = Column(Integer, nullable=False, index=True)  # 🔥 MULTI-SHOP
 
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    created_at = Column(DateTime, default=local_now)
     is_active = Column(Boolean, default=True)
 
 
@@ -32,4 +33,4 @@ class CreditTransaction(Base):
     type = Column(String, nullable=False)  # ADD / PAY / SETTLE / PURCHASE_CREDIT / PURCHASE_RETURN
     reference_invoice = Column(String, nullable=True)
 
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    created_at = Column(DateTime, default=local_now)

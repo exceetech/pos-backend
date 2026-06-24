@@ -15,6 +15,7 @@ trust it for the FK; we always store `current_shop.id`.
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 from datetime import datetime
+from app.util.time_utils import epoch_ms_to_local
 from typing import List
 
 from app.database import get_db
@@ -35,11 +36,11 @@ router = APIRouter(tags=["Purchase Returns"])
 # --------------------------------------------------------------------
 
 def _epoch_ms_to_dt(ms: int | None) -> datetime | None:
-    """Safely convert Android epoch millis to a Python datetime."""
+    """Event time (created_at etc.) -> shop-local wall clock (Bucket A)."""
     if not ms:
         return None
     try:
-        return datetime.utcfromtimestamp(ms / 1000)
+        return epoch_ms_to_local(ms)
     except (ValueError, OSError):
         return None
 
@@ -119,6 +120,7 @@ def _to_model(payload, shop_id: int) -> PurchaseReturn:
     """Map a DTO (or DTO-shaped request) onto a fresh ORM row."""
     return PurchaseReturn(
         shop_id                 = shop_id,
+        local_id                = getattr(payload, "local_id", None),
         shop_product_id         = payload.shop_product_id,
         product_name            = payload.product_name,
         variant_name            = payload.variant_name,
@@ -137,7 +139,7 @@ def _to_model(payload, shop_id: int) -> PurchaseReturn:
         supplier_name           = payload.supplier_name,
         is_credit               = 1 if payload.is_credit else 0,
         credit_account_id       = payload.credit_account_id,
-        created_at              = datetime.utcfromtimestamp(payload.created_at / 1000),
+        created_at              = epoch_ms_to_local(payload.created_at),
         # ── Debit/Credit Note fields (v25+) ──────────────────────────────
         note_number             = getattr(payload, "note_number", None),
         note_date               = getattr(payload, "note_date", None),
@@ -239,6 +241,20 @@ def sync_purchase_returns(
                     "local_id": r.local_id,
                     "reason": err,
                 })
+                continue
+
+            # Idempotent on (shop_id, local_id): a retried/duplicate push of the
+            # same offline row must not insert a second debit note (Sync audit S2).
+            existing = None
+            if r.local_id is not None:
+                existing = db.query(PurchaseReturn).filter(
+                    PurchaseReturn.shop_id == current_shop.id,
+                    PurchaseReturn.local_id == r.local_id,
+                ).first()
+
+            if existing is not None:
+                response.record_id_map[str(r.local_id)] = existing.id
+                response.success_count += 1
                 continue
 
             row = _to_model(r, current_shop.id)

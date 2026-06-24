@@ -2,6 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 from typing import List
 from datetime import datetime
+from app.util.time_utils import epoch_ms_to_local, epoch_ms_to_utc, local_to_epoch_ms, utc_to_epoch_ms
 
 from app.database import get_db
 from app.dependencies import get_current_shop
@@ -60,9 +61,9 @@ def sync_purchase_import_details(
                 if purchase:
                     server_purchase_id = purchase.id
             
-            boe_date = datetime.fromtimestamp(record.bill_of_entry_date / 1000.0)
-            created_at = datetime.fromtimestamp(record.created_at / 1000.0)
-            updated_at = datetime.fromtimestamp(record.updated_at / 1000.0)
+            boe_date = epoch_ms_to_local(record.bill_of_entry_date)
+            created_at = epoch_ms_to_local(record.created_at)
+            updated_at = epoch_ms_to_utc(record.updated_at)
 
             # Check if exists (Idempotent)
             existing = db.query(PurchaseImportDetails).filter(
@@ -155,14 +156,14 @@ def get_purchase_import_details(
             "local_purchase_id": r.local_purchase_id,
             "port_code": r.port_code,
             "bill_of_entry_number": r.bill_of_entry_number,
-            "bill_of_entry_date": r.bill_of_entry_date.timestamp() * 1000 if r.bill_of_entry_date else 0,
+            "bill_of_entry_date": local_to_epoch_ms(r.bill_of_entry_date) if r.bill_of_entry_date else 0,
             "bill_of_entry_value": r.bill_of_entry_value,
             "document_type": r.document_type,
             "sez_supplier_gstin": r.sez_supplier_gstin,
             "sync_status": r.sync_status,
             "device_id": r.device_id,
-            "created_at": r.created_at.timestamp() * 1000 if r.created_at else 0,
-            "updated_at": r.updated_at.timestamp() * 1000 if r.updated_at else 0
+            "created_at": local_to_epoch_ms(r.created_at) if r.created_at else 0,
+            "updated_at": utc_to_epoch_ms(r.updated_at) if r.updated_at else 0
         }
         result.append(PurchaseImportDetailsOut(**out_dict))
 

@@ -23,6 +23,7 @@ from sqlalchemy import (
 from sqlalchemy.orm import relationship
 
 from app.database import Base
+from app.util.time_utils import local_now, utc_now
 from app.models.money_type import MONEY  # R3: exact decimal for money
 
 
@@ -84,9 +85,9 @@ class CreditNote(Base):
     # ── Sync status ───────────────────────────────────────────────────────
     sync_status = Column(String, nullable=False, default="pending")
 
-    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
-    updated_at = Column(DateTime, default=datetime.utcnow,
-                        onupdate=datetime.utcnow, nullable=False)
+    created_at = Column(DateTime, default=local_now, nullable=False)
+    updated_at = Column(DateTime, default=utc_now,
+                        onupdate=utc_now, nullable=False)
 
     # Cascade: deleting a credit note removes its line items.
     items = relationship(

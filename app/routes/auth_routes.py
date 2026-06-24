@@ -15,6 +15,7 @@ from app.dependencies import get_current_shop
 import secrets
 import hashlib
 from datetime import datetime, timedelta
+from app.util.time_utils import utc_now
 from app.services.email_service import send_otp_email
 
 from fastapi import Header
@@ -54,7 +55,7 @@ def register(shop: ShopRegister, db: Session = Depends(get_db)):
     otp_hash = hashlib.sha256(otp.encode()).hexdigest()
 
     new_shop.reset_otp_hash = otp_hash
-    new_shop.reset_otp_expiry = datetime.utcnow() + timedelta(minutes=5)
+    new_shop.reset_otp_expiry = utc_now() + timedelta(minutes=5)
     new_shop.reset_otp_attempts = 0
 
     db.commit()
@@ -227,7 +228,7 @@ def forgot_password(
     otp_hash = hashlib.sha256(otp.encode()).hexdigest()
 
     shop.reset_otp_hash = otp_hash
-    shop.reset_otp_expiry = datetime.utcnow() + timedelta(minutes=1)
+    shop.reset_otp_expiry = utc_now() + timedelta(minutes=1)
     shop.reset_otp_attempts = 0
 
     db.commit()
@@ -247,7 +248,7 @@ def verify_otp(email: str, otp: str, db: Session = Depends(get_db)):
     if not shop or not shop.reset_otp_hash:
         raise HTTPException(status_code=400, detail="Invalid request")
 
-    if shop.reset_otp_expiry < datetime.utcnow():
+    if shop.reset_otp_expiry < utc_now():
         raise HTTPException(status_code=410, detail="OTP expired")
 
     if shop.reset_otp_attempts >= 3:

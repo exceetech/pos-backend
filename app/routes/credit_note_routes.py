@@ -24,6 +24,7 @@ Architecture contract:
 from __future__ import annotations
 
 from datetime import datetime
+from app.util.time_utils import epoch_ms_to_local, epoch_ms_to_utc, local_now, utc_now
 from typing import List
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -46,13 +47,23 @@ router = APIRouter(prefix="/credit-notes", tags=["Credit Notes"])
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 def _epoch_ms_to_dt(ms: int | None) -> datetime:
-    """Safely convert Android epoch millis to a Python datetime."""
+    """Event time (created_at) -> shop-local wall clock (Bucket A)."""
     if not ms:
-        return datetime.utcnow()
+        return local_now()
     try:
-        return datetime.utcfromtimestamp(ms / 1000)
+        return epoch_ms_to_local(ms)
     except (ValueError, OSError):
-        return datetime.utcnow()
+        return local_now()
+
+
+def _cursor_ms_to_dt(ms: int | None) -> datetime:
+    """Sync cursor (updated_at) -> UTC instant (Bucket B)."""
+    if not ms:
+        return utc_now()
+    try:
+        return epoch_ms_to_utc(ms)
+    except (ValueError, OSError):
+        return utc_now()
 
 
 def _build_item(dto: CreditNoteItemDto) -> CreditNoteItem:
@@ -107,7 +118,7 @@ def _build_note(dto: CreditNoteDto, shop_id: int) -> CreditNote:
         total_amount            = dto.total_amount,
         sync_status             = "synced",
         created_at              = _epoch_ms_to_dt(dto.created_at),
-        updated_at              = _epoch_ms_to_dt(dto.updated_at),
+        updated_at              = _cursor_ms_to_dt(dto.updated_at),
     )
     for item_dto in dto.items:
         note.items.append(_build_item(item_dto))
@@ -140,7 +151,7 @@ def _update_existing(existing: CreditNote, dto: CreditNoteDto) -> None:
     existing.tax_amount              = dto.tax_amount
     existing.total_amount            = dto.total_amount
     existing.sync_status             = "synced"
-    existing.updated_at              = _epoch_ms_to_dt(dto.updated_at)
+    existing.updated_at              = _cursor_ms_to_dt(dto.updated_at)
 
     # Replace items wholesale
     for item in list(existing.items):
@@ -218,19 +229,26 @@ def sync_credit_notes(
 @router.get("", response_model=List[CreditNoteOut])
 @router.get("/", response_model=List[CreditNoteOut], include_in_schema=False)
 def list_credit_notes(
+    after_id: int = 0,
     db: Session = Depends(get_db),
     current_shop=Depends(get_current_shop),
 ):
     """
-    Returns all credit notes for the authenticated shop, newest first.
-    Line items are eager-loaded so the response includes them without
-    an N+1 query.
+    Returns credit notes for the authenticated shop.
+
+    Delta pull (M3): when the client sends its `after_id` cursor we return only
+    notes with a higher server id, ordered by id, so it no longer refetches the
+    whole history every sync. `after_id=0` (default / old clients) returns
+    everything → backward-compatible. Credit notes are append-only from the
+    client's perspective (edits are rare and were never propagated by the old
+    full pull either, since the client dedupes on note_number), so an id cursor
+    loses nothing. Line items are eager-loaded to avoid N+1.
     """
-    rows = (
+    q = (
         db.query(CreditNote)
           .options(selectinload(CreditNote.items))
           .filter(CreditNote.shop_id == current_shop.id)
-          .order_by(CreditNote.created_at.desc())
-          .all()
     )
-    return rows
+    if after_id > 0:
+        q = q.filter(CreditNote.id > after_id)
+    return q.order_by(CreditNote.id).all()

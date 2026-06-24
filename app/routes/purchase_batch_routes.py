@@ -5,6 +5,7 @@ Routes for hybrid-inventory purchase_batches.
   • GET  /purchase-batches/{shop_id} — list, newest first
 """
 from datetime import datetime
+from app.util.time_utils import epoch_ms_to_local, local_now
 from typing import List
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -25,7 +26,7 @@ def _to_dt(ms):
     if not ms:
         return None
     try:
-        return datetime.utcfromtimestamp(ms / 1000)
+        return epoch_ms_to_local(ms)
     except (ValueError, OSError):
         return None
 
@@ -76,7 +77,7 @@ def sync_purchase_batches(
                 row = PurchaseBatch(
                     shop_id = current_shop.id,
                     local_id = b.local_id,
-                    created_at = _to_dt(b.created_at) or datetime.utcnow(),
+                    created_at = _to_dt(b.created_at) or local_now(),
                     **fields,
                 )
                 db.add(row)

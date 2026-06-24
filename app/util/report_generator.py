@@ -4,6 +4,7 @@ from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib.units import cm
 from reportlab.lib import colors
 from datetime import datetime
+from app.util.time_utils import local_now
 
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
@@ -103,7 +104,7 @@ def generate_report_pdf(file_path, summary, daily, monthly, products, peak, repo
     elements.append(Spacer(1, 10))
 
     elements.append(Paragraph(
-        f"<b>Date:</b> {datetime.now().strftime('%B %d, %Y')}",
+        f"<b>Date:</b> {local_now().strftime('%B %d, %Y')}",
         date_style
     ))
 

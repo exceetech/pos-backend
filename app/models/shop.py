@@ -1,6 +1,7 @@
 from sqlalchemy import Boolean, Column, Integer, String, DateTime
 from datetime import datetime
 from app.database import Base
+from app.util.time_utils import local_now
 
 
 class Shop(Base):
@@ -25,7 +26,7 @@ class Shop(Base):
     status = Column(String, default="PENDING")
     is_first_login = Column(Boolean, default=True)
 
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=local_now)
 
     device_id = Column(String, nullable=True)
     fcm_token = Column(String, nullable=True)

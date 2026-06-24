@@ -1,6 +1,7 @@
 from passlib.context import CryptContext
 from jose import JWTError, jwt
 from datetime import datetime, timedelta
+from app.util.time_utils import utc_now
 from fastapi import HTTPException, status
 
 # ── Password hashing ──────────────────────────────────────────────────────────
@@ -30,9 +31,9 @@ def create_access_token(data: dict, expires_delta: timedelta | None = None) -> s
     """
     to_encode = data.copy()
     expire = (
-        datetime.utcnow() + expires_delta
+        utc_now() + expires_delta
         if expires_delta
-        else datetime.utcnow() + timedelta(hours=ACCESS_TOKEN_EXPIRE_HOURS)
+        else utc_now() + timedelta(hours=ACCESS_TOKEN_EXPIRE_HOURS)
     )
     to_encode["exp"] = expire
     return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)

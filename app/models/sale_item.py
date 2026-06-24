@@ -1,6 +1,7 @@
 from sqlalchemy import Column, Integer, Float, DateTime, ForeignKey, String
 from datetime import datetime
 from app.database import Base
+from app.util.time_utils import local_now
 
 class SaleItem(Base):
     __tablename__ = "sale_items"
@@ -22,4 +23,4 @@ class SaleItem(Base):
     total_revenue = Column(Float, nullable=False)
     total_cost = Column(Float, nullable=False)
 
-    created_at = Column(DateTime, default=datetime.now)
+    created_at = Column(DateTime, default=local_now)

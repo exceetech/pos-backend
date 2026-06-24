@@ -1,6 +1,7 @@
 from sqlalchemy import Column, Integer, String, Float, DateTime, ForeignKey
 from datetime import datetime
 from app.database import Base
+from app.util.time_utils import local_now, utc_now
 
 class ImportService(Base):
     __tablename__ = "import_services"
@@ -26,5 +27,5 @@ class ImportService(Base):
     sync_status = Column(String, nullable=False, default="synced")
     device_id = Column(String, nullable=True)
 
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = Column(DateTime, default=local_now)
+    updated_at = Column(DateTime, default=utc_now, onupdate=utc_now)
