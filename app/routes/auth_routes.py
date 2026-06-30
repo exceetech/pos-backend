@@ -37,30 +37,40 @@ def register(shop: ShopRegister, db: Session = Depends(get_db)):
 
     existing = db.query(Shop).filter(Shop.email == email).first()
     if existing:
-        raise HTTPException(status_code=400, detail="Email already registered")
+        # A verified/active account already owns this email -> block.
+        if existing.status != "PENDING":
+            raise HTTPException(status_code=400, detail="Email already registered")
 
-    new_shop = Shop(
-        shop_name=shop.shop_name,
-        owner_name=shop.owner_name,
-        email=email,
-        phone=shop.phone,
-        status="PENDING"
-    )
+        # Otherwise the account was never verified (registration abandoned
+        # before OTP). Treat re-register as idempotent: refresh the details
+        # and re-issue a fresh OTP instead of returning 400.
+        existing.shop_name = shop.shop_name
+        existing.owner_name = shop.owner_name
+        existing.phone = shop.phone
+        target_shop = existing
+    else:
+        target_shop = Shop(
+            shop_name=shop.shop_name,
+            owner_name=shop.owner_name,
+            email=email,
+            phone=shop.phone,
+            status="PENDING"
+        )
+        db.add(target_shop)
 
-    db.add(new_shop)
     db.commit()
 
     # 🔥 REUSE FORGOT PASSWORD FLOW
     otp = str(secrets.randbelow(900000) + 100000)
     otp_hash = hashlib.sha256(otp.encode()).hexdigest()
 
-    new_shop.reset_otp_hash = otp_hash
-    new_shop.reset_otp_expiry = utc_now() + timedelta(minutes=5)
-    new_shop.reset_otp_attempts = 0
+    target_shop.reset_otp_hash = otp_hash
+    target_shop.reset_otp_expiry = utc_now() + timedelta(minutes=5)
+    target_shop.reset_otp_attempts = 0
 
     db.commit()
 
-    send_otp_email(new_shop, otp)
+    send_otp_email(target_shop, otp)
 
     return {"message": "OTP sent to email"}
 
