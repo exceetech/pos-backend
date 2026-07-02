@@ -83,7 +83,8 @@ def check_product(
             "stock": inventory.current_stock if inventory else 0,
             "avg_cost": inventory.average_cost if inventory else 0,
             "is_active": existing.is_active,
-            "is_purchased": existing.is_purchased
+            "is_purchased": existing.is_purchased,
+            "is_tax_inclusive": existing.is_tax_inclusive
         }
     }
 
@@ -132,6 +133,7 @@ def add_to_shop(
         existing.price = data.price
         existing.is_active = True
         existing.is_purchased = data.is_purchased
+        existing.is_tax_inclusive = data.is_tax_inclusive
         existing.hsn_code = data.hsn_code or existing.hsn_code
         existing.default_gst_rate = data.default_gst_rate or 0.0
         existing.cgst_percentage = data.cgst_percentage or 0.0
@@ -195,6 +197,7 @@ def add_to_shop(
         price=data.price,
         is_active=True,
         is_purchased=data.is_purchased,
+        is_tax_inclusive=data.is_tax_inclusive,
         hsn_code=data.hsn_code or None,
         default_gst_rate=data.default_gst_rate or 0.0,
         cgst_percentage=data.cgst_percentage or 0.0,
@@ -250,6 +253,7 @@ def get_my_products(
         ShopProduct.category,
         ShopProduct.is_active,
         ShopProduct.is_purchased,
+        ShopProduct.is_tax_inclusive,
         GlobalProduct.name
     ).join(
         GlobalProduct,
@@ -275,7 +279,8 @@ def get_my_products(
             "cess_rate": r.cess_rate or 0.0,
             "category": r.category or "",
             "is_active": r.is_active,
-            "is_purchased": r.is_purchased
+            "is_purchased": r.is_purchased,
+            "is_tax_inclusive": r.is_tax_inclusive
         }
         for r in results
     ]
@@ -353,6 +358,7 @@ def update_shop_product(
     product.price            = data.price
     product.is_active        = True
     product.is_purchased     = data.is_purchased
+    product.is_tax_inclusive = data.is_tax_inclusive
     product.hsn_code         = data.hsn_code or product.hsn_code
     product.default_gst_rate = data.default_gst_rate or 0.0
     product.cgst_percentage  = data.cgst_percentage or 0.0
@@ -540,6 +546,7 @@ def _upsert_shop_product(
         existing.price            = data.price
         existing.is_active        = data.is_active
         existing.is_purchased     = data.is_purchased
+        existing.is_tax_inclusive = data.is_tax_inclusive
         existing.hsn_code         = data.hsn_code or existing.hsn_code
         existing.default_gst_rate = data.default_gst_rate or combined_gst or 0.0
         existing.cgst_percentage  = data.cgst_percentage
@@ -559,6 +566,7 @@ def _upsert_shop_product(
         price             = data.price,
         is_active         = data.is_active,
         is_purchased      = data.is_purchased,
+        is_tax_inclusive  = data.is_tax_inclusive,
         hsn_code          = data.hsn_code or None,
         default_gst_rate  = data.default_gst_rate or combined_gst or 0.0,
         cgst_percentage   = data.cgst_percentage,

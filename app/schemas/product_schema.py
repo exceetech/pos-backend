@@ -9,6 +9,7 @@ class AddProductRequest(BaseModel):
 
     track_inventory: bool = False
     is_purchased: bool = False
+    is_tax_inclusive: bool = False
     initial_stock: Optional[float] = 0
     cost_price: Optional[float] = 0
 
@@ -32,6 +33,7 @@ class ProductResponse(BaseModel):
     id: int
     name: str
     price: float
+    is_tax_inclusive: bool = False
 
     class Config:
         from_attributes = True
@@ -67,6 +69,7 @@ class ShopProductDto(BaseModel):
     price: float
     track_inventory: bool = False
     is_purchased: bool = False
+    is_tax_inclusive: bool = False
     is_custom: bool = False
     is_active: bool = True
     hsn_code: Optional[str] = None

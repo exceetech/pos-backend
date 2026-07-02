@@ -17,6 +17,8 @@ class ShopProduct(Base):
     price = Column(Float, nullable=False)
     is_active = Column(Boolean, default=True)
     is_purchased = Column(Boolean, default=False)
+    is_tax_inclusive = Column(Boolean, default=False)
+    is_tax_inclusive = Column(Boolean, default=False)
 
     # GST fields
     hsn_code = Column(String, nullable=True)
