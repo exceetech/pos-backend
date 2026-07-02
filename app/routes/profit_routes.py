@@ -9,6 +9,7 @@ from app.models.sale_item import SaleItem
 from app.models.inventory_log import InventoryLog
 from app.dependencies import get_current_shop
 from app.models.shop import Shop
+from app.models.credit_note import CreditNote, CreditNoteItem
 
 router = APIRouter(prefix="/profit", tags=["Profit"])
 
@@ -78,15 +79,63 @@ def get_profit(
                 "profit": 0.0,
                 "added": 0.0,
                 "sold": 0.0,
-                "remaining": 0.0,
-                "lossQty": 0.0,
-                "lossAmount": 0.0
+                "lossAmount": 0.0,
+                "returned_qty": 0.0,
+                "returned_cost": 0.0
             }
 
         product_map[pid]["qty"] += s.quantity
         product_map[pid]["revenue"] += s.total_revenue
         product_map[pid]["cost"] += s.total_cost
         product_map[pid]["profit"] += (s.total_revenue - s.total_cost)
+
+    # ================= RETURNS =================
+    returns_query = db.query(CreditNoteItem).join(
+        CreditNote, CreditNote.id == CreditNoteItem.note_id
+    ).filter(
+        CreditNote.shop_id == current_shop.id
+    )
+
+    returns_query = apply_date_filter(returns_query, CreditNote.created_at)
+    returns = returns_query.all()
+
+    for r in returns:
+        pid = r.product_id
+        if pid not in product_map:
+            product = db.query(ShopProduct).filter(
+                ShopProduct.id == pid
+            ).first()
+            
+            if not product:
+                continue
+
+            product_map[pid] = {
+                "product_id": pid,
+                "product_name": r.product_name,
+                "variant": r.variant,
+                "unit": product.unit if product.unit else "",
+                "qty": 0.0,
+                "revenue": 0.0,
+                "cost": 0.0,
+                "profit": 0.0,
+                "added": 0.0,
+                "sold": 0.0,
+                "lossAmount": 0.0,
+                "returned_qty": 0.0,
+                "returned_cost": 0.0
+            }
+
+        qty_returned = r.quantity_returned
+        rev_returned = float(r.total_amount)       # Gross Revenue returned
+        cost_returned = float(r.cost_price_used)   # Net Cost returned
+
+        product_map[pid]["qty"] -= qty_returned
+        product_map[pid]["revenue"] -= rev_returned
+        product_map[pid]["cost"] -= cost_returned
+        product_map[pid]["profit"] -= (rev_returned - cost_returned)
+        
+        product_map[pid]["returned_qty"] += qty_returned
+        product_map[pid]["returned_cost"] += cost_returned
 
     # ================= INVENTORY FILTER (NO DATE FILTER HERE) =================
     inventory_ids = db.query(InventoryLog.product_id).filter(
@@ -116,11 +165,15 @@ def get_profit(
         logs_query = apply_date_filter(logs_query, InventoryLog.created_at)
         logs = logs_query.all()
 
-        added = sum(l.quantity for l in logs if l.type == "ADD")
+        raw_added = sum(l.quantity for l in logs if l.type == "ADD")
         loss_qty = sum(l.quantity for l in logs if l.type == "LOSS")
 
         loss_amount = sum(l.quantity * l.price for l in logs if l.type == "LOSS")
-        expense = sum(l.quantity * l.price for l in logs if l.type == "ADD")
+        raw_expense = sum(l.quantity * l.price for l in logs if l.type == "ADD")
+
+        # Clean genuine purchases by stripping out returned stock
+        added = raw_added - product_map[pid].get("returned_qty", 0.0)
+        expense = raw_expense - product_map[pid].get("returned_cost", 0.0)
 
         sold = product_map[pid]["qty"]
         remaining = added - sold - loss_qty

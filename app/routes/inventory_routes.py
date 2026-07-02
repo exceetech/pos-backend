@@ -109,10 +109,10 @@ def sync_inventory_logs(
         # 🔥 APPLY LOGIC
         # =================================================
 
-        if log.type == "ADD":
+        if log.type in ["ADD", "PURCHASE", "RETURN"]:
 
-            old_stock = inventory.current_stock
-            old_avg = inventory.average_cost
+            old_stock = float(inventory.current_stock or 0.0)
+            old_avg = float(inventory.average_cost or 0.0)
 
             new_stock = old_stock + log.quantity
 
@@ -128,12 +128,9 @@ def sync_inventory_logs(
             inventory.current_stock = new_stock
             inventory.average_cost = new_avg
 
-        elif log.type in ["SALE", "LOSS", "ADJUST", "RETURN"]:
-            # 🔥 PREVENT NEGATIVE STOCK & RESET COST IF 0
-            new_stock = max(0.0, float(inventory.current_stock or 0) - log.quantity)
+        elif log.type in ["SALE", "LOSS", "ADJUST"]:
+            new_stock = float(inventory.current_stock or 0.0) - log.quantity
             inventory.current_stock = new_stock
-            if new_stock <= 0:
-                inventory.average_cost = 0.0
 
     db.commit()
 
