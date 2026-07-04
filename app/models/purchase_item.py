@@ -20,6 +20,7 @@ class PurchaseItem(Base):
     unit = Column(String, nullable=True)
 
     taxable_amount = Column(Float, nullable=False)
+    discount_amount = Column(Float, nullable=False, default=0.0)
     invoice_value = Column(Float, nullable=False)
     cost_price = Column(Float, nullable=False)
 

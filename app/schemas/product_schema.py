@@ -98,7 +98,18 @@ class ShopProductSyncResponse(BaseModel):
 class GlobalProductRegisterRequest(BaseModel):
     name: str
     variant: Optional[str] = None
+    unit: Optional[str] = None
     hsn_code: Optional[str] = None
+    hsn_description: Optional[str] = None
+    official_uqc: Optional[str] = None
+    # Statutory autofill fields (shared once verified). Default None (not
+    # 0.0) so an omitted field is distinguishable from an explicit 0 — this
+    # lets a shop correct a rate down to 0 (NIL) in the refine branch.
+    default_gst_rate: Optional[float] = None
+    cgst_percentage: Optional[float] = None
+    sgst_percentage: Optional[float] = None
+    igst_percentage: Optional[float] = None
+    cess_rate: Optional[float] = None
 
 class GlobalProductRegisterResponse(BaseModel):
     success: bool = True

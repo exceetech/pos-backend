@@ -16,6 +16,7 @@ class PurchaseItemDto(BaseModel):
     unit: Optional[str] = None
 
     taxable_amount: float
+    discount_amount: float = 0.0
     invoice_value: float
     cost_price: float
 

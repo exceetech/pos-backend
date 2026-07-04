@@ -15,6 +15,7 @@ from app.routes import shop_routes
 from app.routes import billing_settings_routes
 from app.routes.security_routes import router as security_router
 from app.routes import admin_routes
+from app.routes.admin_catalog_routes import router as admin_catalog_router
 from app.routes.analytics_routes import router as analytics_router
 from app.routes import subscription_routes as subscription
 from app.routes import gst_routes
@@ -319,6 +320,134 @@ try:
     _add_gstr_support_columns()
 except Exception as e:  # pragma: no cover
     print(f"[startup] GSTR support column migration skipped: {e}")
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Global-variant autofill (provenance + statutory tax fields) + the
+# (product_id, variant_name) uniqueness that stops duplicate-queue spam.
+# create_all() adds all of this on fresh DBs; this idempotent ALTER
+# covers already-deployed databases where the table pre-existed. The
+# de-dup MUST run before the unique constraint or the ADD CONSTRAINT
+# aborts on legacy duplicates.
+# ──────────────────────────────────────────────────────────────────────
+def _add_global_variant_autofill() -> None:
+    from sqlalchemy import inspect, text
+
+    table = "global_product_variants"
+    inspector = inspect(engine)
+    if table not in set(inspector.get_table_names()):
+        return
+
+    column_defs = [
+        ("created_by_shop_id", "created_by_shop_id INTEGER NULL"),
+        ("hsn_code",           "hsn_code VARCHAR NULL"),
+        ("hsn_description",    "hsn_description VARCHAR NULL"),
+        ("official_uqc",       "official_uqc VARCHAR NULL"),
+        ("default_gst_rate",   "default_gst_rate DOUBLE PRECISION NOT NULL DEFAULT 0.0"),
+        ("cgst_percentage",    "cgst_percentage DOUBLE PRECISION NOT NULL DEFAULT 0.0"),
+        ("sgst_percentage",    "sgst_percentage DOUBLE PRECISION NOT NULL DEFAULT 0.0"),
+        ("igst_percentage",    "igst_percentage DOUBLE PRECISION NOT NULL DEFAULT 0.0"),
+        ("cess_rate",          "cess_rate DOUBLE PRECISION NOT NULL DEFAULT 0.0"),
+    ]
+
+    dialect = engine.dialect.name
+
+    with engine.connect() as conn:
+        existing = {c["name"] for c in inspector.get_columns(table)}
+        for column_name, ddl in column_defs:
+            _add_column_if_missing(conn, table, existing, column_name, ddl)
+
+        # De-duplicate (keep verified, else lowest id) BEFORE uniqueness.
+        if dialect == "postgresql":
+            conn.execute(text(
+                """
+                DELETE FROM global_product_variants g
+                USING (
+                    SELECT id,
+                           ROW_NUMBER() OVER (
+                               PARTITION BY product_id, variant_name
+                               ORDER BY is_verified DESC, id ASC
+                           ) AS rn
+                    FROM global_product_variants
+                ) d
+                WHERE g.id = d.id AND d.rn > 1
+                """
+            ))
+        else:
+            conn.execute(text(
+                """
+                DELETE FROM global_product_variants
+                WHERE id NOT IN (
+                    SELECT MIN(id) FROM global_product_variants
+                    GROUP BY product_id, variant_name
+                )
+                """
+            ))
+
+        # Add the unique constraint only if it isn't already present.
+        # (SQLite can't ALTER-ADD a constraint; skip there — create_all
+        # already builds it on fresh SQLite dev DBs from the model.)
+        if dialect != "sqlite":
+            constraint_names = {
+                uc["name"] for uc in inspect(engine).get_unique_constraints(table)
+            }
+            if "uix_gpv_product_variant" not in constraint_names:
+                conn.execute(text(
+                    "ALTER TABLE global_product_variants "
+                    "ADD CONSTRAINT uix_gpv_product_variant "
+                    "UNIQUE (product_id, variant_name)"
+                ))
+
+        conn.commit()
+
+
+try:
+    _add_global_variant_autofill()
+except Exception as e:  # pragma: no cover — never crash startup
+    print(f"[startup] global-variant autofill migration skipped: {e}")
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Ensure global_products.name is UNIQUE on already-deployed DBs. The model
+# declares unique=True (so create_all builds it on fresh DBs), but a DB
+# created before that was added won't have it. A single row per name is
+# what keeps the app's catalog name→id mapping unambiguous. Best-effort:
+# if legacy exact-duplicate names exist the index creation fails and we
+# log it (the app's name-based multi-id variant fetch still copes).
+# ──────────────────────────────────────────────────────────────────────
+def _ensure_global_product_name_unique() -> None:
+    from sqlalchemy import inspect, text
+
+    inspector = inspect(engine)
+    if "global_products" not in set(inspector.get_table_names()):
+        return
+
+    has_unique = (
+        any("name" in uc.get("column_names", [])
+            for uc in inspector.get_unique_constraints("global_products"))
+        or any(ix.get("unique") and ix.get("column_names") == ["name"]
+               for ix in inspector.get_indexes("global_products"))
+    )
+    if has_unique:
+        return
+
+    with engine.connect() as conn:
+        try:
+            conn.execute(text(
+                "CREATE UNIQUE INDEX IF NOT EXISTS uix_global_products_name "
+                "ON global_products (name)"
+            ))
+            conn.commit()
+        except Exception as e:
+            conn.rollback()
+            print("[startup] could not add unique index on "
+                  f"global_products.name (duplicate names present?): {e}")
+
+
+try:
+    _ensure_global_product_name_unique()
+except Exception as e:  # pragma: no cover — never crash startup
+    print(f"[startup] global_products name-uniqueness ensure skipped: {e}")
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -739,6 +868,7 @@ app.include_router(shop_routes.router)
 app.include_router(billing_settings_routes.router)
 app.include_router(security_router)
 app.include_router(admin_routes.router)
+app.include_router(admin_catalog_router)
 app.include_router(analytics_router)
 app.include_router(subscription.router)
 app.include_router(credit.router)

@@ -2,6 +2,7 @@ from app.models.inventory import Inventory
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from sqlalchemy import or_
+from sqlalchemy.exc import IntegrityError
 
 from app.database import get_db
 from app.models.shop import Shop
@@ -16,7 +17,7 @@ from app.schemas.product_schema import (
 from app.models.global_hsn import GlobalHSN
 from app.models.global_product_variant import GlobalProductVariant
 from app.dependencies import get_current_shop
-from app.utils import normalize_name
+from app.utils import normalize_name, normalize_variant
 
 router = APIRouter(prefix="/products", tags=["Products"])
 
@@ -90,6 +91,71 @@ def check_product(
 
 
 # ================= ADD PRODUCT =================
+def get_or_create_global_product(db: Session, normalized: str, shop_id: int) -> GlobalProduct:
+    """
+    Race-safe get-or-create for a GlobalProduct by its (unique) name.
+
+    global_products.name is UNIQUE, so a plain check-then-insert can 500
+    when two requests create the same new name at once. This guards the
+    insert with a SAVEPOINT and, on the unique-constraint race, re-fetches
+    the row the other request created — guaranteeing exactly one row per
+    normalized name (which is what keeps the Android catalog id→name map
+    unambiguous).
+    """
+    gp = db.query(GlobalProduct).filter(GlobalProduct.name == normalized).first()
+    if gp is not None:
+        return gp
+    try:
+        with db.begin_nested():
+            gp = GlobalProduct(
+                name=normalized, is_verified=False, created_by_shop_id=shop_id
+            )
+            db.add(gp)
+            db.flush()
+        return gp
+    except IntegrityError:
+        # Lost the insert race — the winning row should now be visible.
+        gp = db.query(GlobalProduct).filter(GlobalProduct.name == normalized).first()
+        if gp is None:
+            # Extremely unlikely (an IntegrityError implies a committed
+            # conflicting row), but never return None to callers that
+            # immediately dereference gp.id.
+            raise HTTPException(status_code=409, detail="Could not resolve product row")
+        return gp
+
+
+def _apply_variant_fields(v, data, unit_clean: str) -> bool:
+    """
+    Apply the statutory fields the caller provided onto a
+    GlobalProductVariant. Returns True if any stored value actually
+    changed. Rules: strings applied only when non-blank, tax fields
+    applied when not None (so an explicit 0 sticks), unit only when the
+    row still holds the "unit" default.
+    """
+    changed = False
+
+    def _set(attr, newval):
+        nonlocal changed
+        if newval is not None and getattr(v, attr) != newval:
+            setattr(v, attr, newval)
+            changed = True
+
+    if unit_clean != "unit" and (not v.unit or v.unit == "unit"):
+        _set("unit", unit_clean)
+    if data.hsn_code and data.hsn_code.strip():
+        _set("hsn_code", data.hsn_code.strip())
+    if data.hsn_description and data.hsn_description.strip():
+        _set("hsn_description", data.hsn_description.strip())
+    if data.official_uqc and data.official_uqc.strip():
+        _set("official_uqc", data.official_uqc.strip().upper())
+    _set("default_gst_rate", data.default_gst_rate)
+    _set("cgst_percentage", data.cgst_percentage)
+    _set("sgst_percentage", data.sgst_percentage)
+    _set("igst_percentage", data.igst_percentage)
+    _set("cess_rate", data.cess_rate)
+    return changed
+
+
 @router.post("/add-to-shop")
 def add_to_shop(
     data: AddProductRequest,
@@ -98,19 +164,7 @@ def add_to_shop(
 ):
     normalized = normalize_name(data.name)
 
-    global_product = db.query(GlobalProduct).filter(
-        GlobalProduct.name == normalized
-    ).first()
-
-    if not global_product:
-        global_product = GlobalProduct(
-            name=normalized,
-            is_verified=False,
-            created_by_shop_id=current_shop.id
-        )
-        db.add(global_product)
-        db.commit()
-        db.refresh(global_product)
+    global_product = get_or_create_global_product(db, normalized, current_shop.id)
 
     variant = data.variant_name.strip() if data.variant_name and data.variant_name.strip() else None
     unit = (data.unit or "piece").lower().strip()
@@ -433,9 +487,10 @@ def get_product_variants_by_name(product_name: str, db: Session = Depends(get_db
         
     variants = db.query(GlobalProductVariant).filter(
         GlobalProductVariant.product_id == global_p.id,
-        GlobalProductVariant.is_verified == True
+        GlobalProductVariant.is_verified == True,
+        GlobalProductVariant.variant_name != ""   # exclude product-level holder
     ).all()
-    
+
     return {
         "product_name": product_name,
         "variants": [v.variant_name for v in variants]
@@ -455,31 +510,66 @@ def register_global_product(
 ):
     normalized = normalize_name(data.name)
 
-    # 1. Upsert GlobalProduct
-    gp = db.query(GlobalProduct).filter(GlobalProduct.name == normalized).first()
-    if not gp:
-        gp = GlobalProduct(
-            name=normalized,
-            is_verified=False,
-            created_by_shop_id=current_shop.id
-        )
-        db.add(gp)
-        db.flush()
+    # 1. Upsert GlobalProduct (race-safe, single row per name)
+    gp = get_or_create_global_product(db, normalized, current_shop.id)
 
     # 2. Register variant (if provided)
-    if data.variant:
-        variant_clean = data.variant.strip().capitalize()
-        exists_v = db.query(GlobalProductVariant).filter(
-            GlobalProductVariant.product_id == gp.id,
-            GlobalProductVariant.variant_name == variant_clean
-        ).first()
-        if not exists_v:
-            db.add(GlobalProductVariant(
-                product_id=gp.id,
-                variant_name=variant_clean,
-                unit="unit",
-                is_verified=False
-            ))
+    #
+    # This is the SINGLE writer of GlobalProductVariant rows. All other
+    # paths (add_to_shop, _upsert_shop_product) touch shop_products only.
+    # The existence check keeps the (product_id, variant_name) unique
+    # constraint from ever raising IntegrityError.
+    # When the product has no named variant we still record a row, using an
+    # empty-string variant_name as the PRODUCT-LEVEL statutory holder — so
+    # variant-less products carry HSN/GST/UQC for cross-shop autofill just
+    # like variant products do.
+    variant_key = normalize_variant(data.variant) or ""
+    unit_clean = (data.unit or "").strip().lower() or "unit"
+
+    exists_v = db.query(GlobalProductVariant).filter(
+        GlobalProductVariant.product_id == gp.id,
+        GlobalProductVariant.variant_name == variant_key
+    ).first()
+
+    if exists_v is None:
+        # Brand-new pending submission — record provenance + the statutory
+        # tax fields (never price). Guard the insert with a SAVEPOINT: if
+        # another shop registers the same (product_id, variant_name) at the
+        # same instant, the unique constraint fires here and we roll back
+        # JUST this insert instead of poisoning the whole transaction.
+        try:
+            with db.begin_nested():
+                db.add(GlobalProductVariant(
+                    product_id=gp.id,
+                    variant_name=variant_key,
+                    unit=unit_clean,
+                    is_verified=False,
+                    created_by_shop_id=current_shop.id,
+                    hsn_code=(data.hsn_code.strip() if data.hsn_code else None),
+                    hsn_description=(data.hsn_description.strip() if data.hsn_description else None),
+                    official_uqc=(data.official_uqc.strip().upper() if data.official_uqc else None),
+                    default_gst_rate=data.default_gst_rate or 0.0,
+                    cgst_percentage=data.cgst_percentage or 0.0,
+                    sgst_percentage=data.sgst_percentage or 0.0,
+                    igst_percentage=data.igst_percentage or 0.0,
+                    cess_rate=data.cess_rate or 0.0,
+                ))
+                db.flush()
+        except IntegrityError:
+            # Another shop won the race and created the row first — that's
+            # fine, it already exists globally.
+            pass
+    elif exists_v.created_by_shop_id == current_shop.id:
+        # The OWNING shop is updating its own row. Apply the fields it
+        # provided. A non-owner shop's re-sync never reaches here, so it
+        # can't overwrite someone else's row or a verified fact.
+        changed = _apply_variant_fields(exists_v, data, unit_clean)
+        if exists_v.is_verified and changed:
+            # The owner corrected data on an already-VERIFIED (canonical)
+            # row. Rather than silently changing what other shops rely on,
+            # send it back to the admin queue for re-review. Only happens
+            # when something actually changed, so normal resyncs don't churn.
+            exists_v.is_verified = False
 
     # 3. Register HSN (if provided)
     if data.hsn_code:
@@ -521,11 +611,7 @@ def _upsert_shop_product(
     """Upsert one product and return its server id."""
     normalized = normalize_name(data.name)
 
-    gp = db.query(GlobalProduct).filter(GlobalProduct.name == normalized).first()
-    if not gp:
-        gp = GlobalProduct(name=normalized, is_verified=False, created_by_shop_id=shop_id)
-        db.add(gp)
-        db.flush()
+    gp = get_or_create_global_product(db, normalized, shop_id)
 
     variant = data.variant.strip() if data.variant and data.variant.strip() else None
     unit    = (data.unit or "piece").lower().strip()
