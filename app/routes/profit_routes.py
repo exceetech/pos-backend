@@ -1,6 +1,8 @@
+from app.models.bill import Bill
 from app.models.shop_products import ShopProduct
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
+from sqlalchemy import func, and_, or_
 from datetime import datetime, timedelta
 from app.util.time_utils import local_now
 
@@ -24,25 +26,37 @@ def get_profit(
 ):
 
     now = local_now()
+    
+    start = None
+    end = None
+    prev_start = None
+    prev_end = None
+
+    if filter == "today":
+        start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        prev_start = start - timedelta(days=1)
+        prev_end = start
+    elif filter == "week":
+        # Calendar week starts on Monday
+        monday = now - timedelta(days=now.weekday())
+        start = monday.replace(hour=0, minute=0, second=0, microsecond=0)
+        prev_start = start - timedelta(days=7)
+        prev_end = start
+    elif filter == "month":
+        start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+        prev_start = (start - timedelta(days=1)).replace(day=1)
+        prev_end = start
+    elif filter == "custom" and start_date and end_date:
+        start = datetime.strptime(start_date, "%Y-%m-%d")
+        end = datetime.strptime(end_date, "%Y-%m-%d") + timedelta(days=1)
 
     # ================= DATE FILTER =================
     def apply_date_filter(query, column):
 
-        if filter == "today":
-            start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        if filter in ["today", "week", "month"]:
             return query.filter(column >= start)
 
-        elif filter == "week":
-            start = now - timedelta(days=7)
-            return query.filter(column >= start)
-
-        elif filter == "month":
-            start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
-            return query.filter(column >= start)
-
-        elif filter == "custom" and start_date and end_date:
-            start = datetime.strptime(start_date, "%Y-%m-%d")
-            end = datetime.strptime(end_date, "%Y-%m-%d") + timedelta(days=1)
+        elif filter == "custom" and start and end:
             return query.filter(column >= start, column < end)
 
         return query
@@ -92,8 +106,17 @@ def get_profit(
     # ================= RETURNS =================
     returns_query = db.query(CreditNoteItem).join(
         CreditNote, CreditNote.id == CreditNoteItem.note_id
+        ).outerjoin(
+        Bill, CreditNote.original_invoice_number == Bill.bill_number
     ).filter(
-        CreditNote.shop_id == current_shop.id
+        CreditNote.shop_id == current_shop.id,
+        or_(
+            Bill.id == None,
+            and_(
+                Bill.active == True,
+                Bill.is_cancelled == False
+            )
+        )
     )
 
     returns_query = apply_date_filter(returns_query, CreditNote.created_at)
@@ -193,13 +216,65 @@ def get_profit(
 
     final_profit = total_revenue - total_cost - total_loss
 
+    growth_percentage = None
+    if filter in ["today", "week", "month"] and inventory_set:
+        inv_list = list(inventory_set)
+        
+        # Previous Sales Profit
+        prev_sales_profit = db.query(func.sum(SaleItem.total_revenue - SaleItem.total_cost)).filter(
+            SaleItem.shop_id == current_shop.id,
+            SaleItem.product_id.in_(inv_list),
+            SaleItem.created_at >= prev_start,
+            SaleItem.created_at < prev_end
+        ).scalar() or 0.0
+
+        # Previous Returns Profit
+        prev_returns_profit = db.query(func.sum(CreditNoteItem.total_amount - CreditNoteItem.cost_price_used)).join(
+            CreditNote, CreditNote.id == CreditNoteItem.note_id
+        ).outerjoin(
+            Bill, CreditNote.original_invoice_number == Bill.bill_number
+        ).filter(
+            CreditNote.shop_id == current_shop.id,
+            CreditNoteItem.product_id.in_(inv_list),
+            CreditNote.created_at >= prev_start,
+            CreditNote.created_at < prev_end,
+            or_(
+                Bill.id == None,
+                and_(Bill.active == True, Bill.is_cancelled == False)
+            )
+        ).scalar() or 0.0
+
+        # Previous Loss
+        prev_loss = db.query(func.sum(InventoryLog.quantity * InventoryLog.price)).filter(
+            InventoryLog.shop_id == current_shop.id,
+            InventoryLog.product_id.in_(inv_list),
+            InventoryLog.is_active == True,
+            InventoryLog.type == "LOSS",
+            InventoryLog.created_at >= prev_start,
+            InventoryLog.created_at < prev_end
+        ).scalar() or 0.0
+
+        prev_profit = prev_sales_profit - prev_returns_profit - prev_loss
+        
+        if prev_profit != 0:
+            growth_percentage = ((final_profit - prev_profit) / abs(prev_profit)) * 100
+        else:
+            growth_percentage = 100.0 if final_profit > 0 else (0.0 if final_profit == 0 else -100.0)
+
+    summary_data = {
+        "revenue": total_revenue,
+        "cost": total_cost,
+        "profit": final_profit,
+        "loss": total_loss,
+        "expense": total_expense
+    }
+    
+    if growth_percentage is not None:
+        summary_data["growth"] = {
+            "profit_percentage": round(growth_percentage, 2)
+        }
+
     return {
-        "summary": {
-            "revenue": total_revenue,
-            "cost": total_cost,
-            "profit": final_profit,
-            "loss": total_loss,
-            "expense": total_expense
-        },
+        "summary": summary_data,
         "products": list(product_map.values())
     }

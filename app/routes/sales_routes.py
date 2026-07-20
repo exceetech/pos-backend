@@ -27,7 +27,8 @@ def create_sale(
             selling_price=item.selling_price,
             cost_price=item.cost_price,
             total_revenue=item.quantity * item.selling_price,
-            total_cost=item.quantity * item.cost_price
+            total_cost=item.quantity * item.cost_price,
+            bill_number=data.bill_number
         )
 
         db.add(sale)

@@ -12,3 +12,4 @@ class SaleItemDto(BaseModel):
 
 class CreateSaleRequest(BaseModel):
     items: List[SaleItemDto]
+    bill_number: Optional[str] = None

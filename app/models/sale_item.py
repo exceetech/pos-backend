@@ -14,6 +14,9 @@ class SaleItem(Base):
     # 🔥 IMPORTANT (store name for grouping)
     product_name = Column(String, nullable=False)
     variant = Column(String, nullable=True)
+    
+    # Link to the original bill so cancellations can delete the analytics rows
+    bill_number = Column(String, nullable=True, index=True)
 
     quantity = Column(Float, nullable=False)
 

@@ -109,7 +109,7 @@ def sync_inventory_logs(
         # 🔥 APPLY LOGIC
         # =================================================
 
-        if log.type in ["ADD", "PURCHASE", "RETURN"]:
+        if log.type in ["ADD", "PURCHASE", "RETURN", "CANCEL_RESTOCK"]:
 
             old_stock = float(inventory.current_stock or 0.0)
             old_avg = float(inventory.average_cost or 0.0)

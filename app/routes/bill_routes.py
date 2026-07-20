@@ -1,3 +1,4 @@
+from app.models.sale_item import SaleItem
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from sqlalchemy import or_
@@ -86,6 +87,12 @@ def cancel_bill(
         bill.active = False
         db.commit()
 
+    # Delete orphaned analytics data so the profit dashboard stays clean
+    # (Moved outside the ⁠ is_cancelled ⁠ check because the GST sync might have already marked the bill as cancelled)
+    if bill.bill_number:
+        db.query(SaleItem).filter(SaleItem.bill_number == bill.bill_number).delete()
+        db.commit()
+        
     return {"message": "Bill cancelled", "bill_number": bill.bill_number}
 
 
@@ -149,6 +156,9 @@ def create_bill(
     # Acknowledge it without writing a row — this prevents old cancelled bills
     # from ever appearing in Bill History.
     if data.is_cancelled:
+        local_ref = f"LOCAL-{data.client_device_id}-{data.client_bill_id}"
+        db.query(SaleItem).filter(SaleItem.bill_number == local_ref).delete()
+        db.commit()
         return {
             "message": "Cancelled bill acknowledged",
             "bill_id": -1,
@@ -186,6 +196,13 @@ def create_bill(
 
     next_num = (max_suffix or 0) + 1
     next_bill_number = f"{prefix}{next_num}"
+
+    new_bill_number = f"{prefix}{next_num}"
+    
+    local_ref = f"LOCAL-{data.client_device_id}-{data.client_bill_id}"
+    db.query(SaleItem).filter(SaleItem.bill_number == local_ref).update(
+        {"bill_number": new_bill_number}, synchronize_session=False
+    )
 
     bill_items = []
 
@@ -249,7 +266,7 @@ def create_bill(
 
     bill = Bill(
         shop_id=current_shop.id,
-        bill_number=str(next_bill_number),
+        bill_number=new_bill_number,
         final_amount=fallback_final_amount,
         total_items=total_items,
         payment_method=data.payment_method,

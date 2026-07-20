@@ -408,6 +408,45 @@ except Exception as e:  # pragma: no cover — never crash startup
 
 
 # ──────────────────────────────────────────────────────────────────────
+# sale_items.bill_number — the SaleItem model declares this column (it is
+# stamped with the client's LOCAL-… reference at insert time, then bulk-
+# updated to the server INV_YYYY_N number inside create_bill). create_all()
+# adds it on fresh DBs; this idempotent ALTER covers already-deployed
+# databases whose sale_items table predates the column. Without it,
+# create_bill's UPDATE sale_items SET bill_number=… raises UndefinedColumn.
+# ──────────────────────────────────────────────────────────────────────
+def _add_sale_items_bill_number() -> None:
+    from sqlalchemy import inspect, text
+
+    table = "sale_items"
+    inspector = inspect(engine)
+    if table not in set(inspector.get_table_names()):
+        return
+
+    with engine.connect() as conn:
+        existing = {c["name"] for c in inspector.get_columns(table)}
+        _add_column_if_missing(
+            conn, table, existing, "bill_number", "bill_number VARCHAR NULL"
+        )
+
+        # Index the reconciliation lookup (create_bill filters on it).
+        index_names = {ix["name"] for ix in inspect(engine).get_indexes(table)}
+        if "ix_sale_items_bill_number" not in index_names:
+            conn.execute(text(
+                "CREATE INDEX IF NOT EXISTS ix_sale_items_bill_number "
+                "ON sale_items (bill_number)"
+            ))
+
+        conn.commit()
+
+
+try:
+    _add_sale_items_bill_number()
+except Exception as e:  # pragma: no cover — never crash startup
+    print(f"[startup] sale_items.bill_number migration skipped: {e}")
+
+
+# ──────────────────────────────────────────────────────────────────────
 # Ensure global_products.name is UNIQUE on already-deployed DBs. The model
 # declares unique=True (so create_all builds it on fresh DBs), but a DB
 # created before that was added won't have it. A single row per name is
