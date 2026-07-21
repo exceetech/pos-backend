@@ -507,6 +507,36 @@ except Exception as e:  # pragma: no cover
     print(f"[startup] v40 tables ensure skipped: {e}")
 
 
+def _ensure_supplier_table() -> None:
+    """
+    Creates `suppliers` if missing, then reports any column the model expects
+    but the table lacks.
+
+    create_all() only CREATES missing tables — it never ALTERs an existing one.
+    So a table built by an earlier version keeps its old columns, and the
+    mismatch only shows up as a 500 the first time someone hits the endpoint.
+    That is exactly how `updated_at` vs `updated_at_ms` got through.
+
+    This prints at startup instead, where it is noticed.
+    """
+    from sqlalchemy import inspect as _sa_inspect
+    from app.models.supplier import Supplier
+
+    Supplier.__table__.create(bind=engine, checkfirst=True)
+
+    actual = {c["name"] for c in _sa_inspect(engine).get_columns("suppliers")}
+    expected = {c.name for c in Supplier.__table__.columns}
+    missing = expected - actual
+    if missing:
+        print(f"[startup] WARNING suppliers table is missing columns: {sorted(missing)}")
+
+
+try:
+    _ensure_supplier_table()
+except Exception as e:  # pragma: no cover
+    print(f"[startup] supplier table ensure skipped: {e}")
+
+
 # ──────────────────────────────────────────────────────────────────────
 # v41 — A customer may have separate B2C and B2B rows under one phone.
 # Move the customers unique key from (shop_id, phone) to
@@ -930,6 +960,10 @@ from app.routes.category_routes import router as category_router
 app.include_router(category_router)
 from app.routes.customer_routes import router as customer_router
 app.include_router(customer_router)
+# Supplier master — GET /suppliers, /suppliers/by-gstin, /suppliers/by-name,
+# POST /suppliers/sync, /suppliers/account.
+from app.routes.supplier_routes import router as supplier_router
+app.include_router(supplier_router)
 # Units
 from app.schemas.product_schema import UnitListResponse
 

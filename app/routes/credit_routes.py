@@ -114,17 +114,64 @@ def sync_credit(
     if not account:
         raise HTTPException(status_code=404, detail="Account not found")
 
+    # ── SIGN CONVENTION — DO NOT PUT PAY BACK WITH PURCHASE_RETURN ───────
+    #
+    #   ADD / PURCHASE_CREDIT  client sends POSITIVE  → debt goes UP
+    #   PURCHASE_RETURN        client sends NEGATIVE  → adding it lowers debt
+    #   PAY                    client sends POSITIVE  → debt must come DOWN
+    #
+    # PAY is the ONLY type the client sends unsigned, so it is the only one
+    # that subtracts. Sharing a branch with PURCHASE_RETURN and adding meant
+    # every payment moved the balance the wrong way: the app subtracted it
+    # while the server added it. Pay ₹5,000 on a zero balance and the device
+    # held −5,000 while the server held +5,000; the next pull copied the
+    # server's figure down, so billing ₹100 afterwards showed ₹5,100 owing
+    # with the advance wiped, instead of ₹4,900 in credit.
+    # Amounts arrive as magnitudes for every type except PURCHASE_RETURN, which
+    # is signed negative by the client. Enforced here rather than trusted, so a
+    # malformed request can't invert a balance.
+    if data.type in ("ADD", "PURCHASE_CREDIT", "PAY", "WRITE_OFF", "REFUND"):
+        if data.amount <= 0:
+            raise HTTPException(
+                status_code=400,
+                detail=f"{data.type} amount must be greater than 0"
+            )
+    elif data.type == "PURCHASE_RETURN":
+        if data.amount > 0:
+            raise HTTPException(
+                status_code=400,
+                detail="PURCHASE_RETURN amount must be zero or negative"
+            )
+
     if data.type == "ADD" or data.type == "PURCHASE_CREDIT":
         account.due_amount += data.amount
-    elif data.type == "PAY" or data.type == "PURCHASE_RETURN":
-        # amount for PURCHASE_RETURN might be negative already from client, 
-        # but let's be safe and check logic.
-        # In my Android repo, I sent -invoiceValue for RETURN. 
-        # So ADDING a negative value correctly reduces debt.
-        # However, the backend logic for PAY was account.due_amount -= data.amount.
-        # If I send negative amount and use -=, it would ADD debt.
-        # Let's align on: backend always DOES the math based on type.
-        account.due_amount += data.amount 
+    elif data.type == "PAY":
+        account.due_amount -= data.amount
+    elif data.type == "PURCHASE_RETURN":
+        account.due_amount += data.amount
+
+    # WRITE_OFF and REFUND replace the old catch-all SETTLE. One type meaning
+    # two opposite events — debt forgiven vs money handed back — is what forced
+    # every reader to reconstruct the meaning by replaying the ledger, and what
+    # let a refund be counted as if it were a sale.
+    #
+    #   WRITE_OFF  debt forgiven, no cash moved
+    #   REFUND     the customer's advance handed back, cash left the shop
+    #
+    # Both CLOSE the account, so both set the balance to zero rather than
+    # subtracting. That is deliberate: settling means "this account is now
+    # square", and an absolute instruction re-synchronises a device and server
+    # that have drifted apart. Applying them as deltas left any drift in place,
+    # which mattered while balances damaged by the old PAY bug were still
+    # circulating.
+    #
+    # `amount` is still stored, and is what the ledger and reports read to say
+    # how much was written off or handed back.
+    elif data.type in ("WRITE_OFF", "REFUND"):
+        account.due_amount = 0
+
+    # Still accepted so older app builds keep working through the rollover.
+    # Clients on this version no longer send it.
     elif data.type == "SETTLE":
         account.due_amount = 0
     else:

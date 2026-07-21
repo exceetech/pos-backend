@@ -42,3 +42,8 @@ from .credit_note import CreditNote, CreditNoteItem  # noqa: F401
 from .import_service import ImportService  # noqa: F401
 from .shop_category import ShopCategory  # noqa: F401
 from .customer import Customer  # noqa: F401
+# Imported here, not only from the route module — main.py runs
+# Base.metadata.create_all() near the top, long before the routers are
+# included, so a model registered only at router-import time would never get
+# its table created.
+from .supplier import Supplier  # noqa: F401
