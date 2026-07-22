@@ -14,11 +14,55 @@ from app.models.credit import CreditAccount
 from app.models.shop_products import ShopProduct
 from app.models.global_products import GlobalProduct
 from app.models.inventory import Inventory
-from app.schemas.purchase_schema import PurchaseSyncRequest, PurchaseSyncResponse
+from app.schemas.purchase_schema import PurchaseSyncRequest, PurchaseSyncResponse, CancelPurchaseRequest
 from app.utils import normalize_name
 from fastapi.responses import JSONResponse
 
 router = APIRouter(prefix="/purchases", tags=["Purchases"])
+
+
+@router.put("/cancel")
+def cancel_purchase(
+    payload: CancelPurchaseRequest,
+    db: Session = Depends(get_db),
+    current_shop=Depends(get_current_shop),
+):
+    """
+    Void a purchase. Status only — the ITC and inventory unwind ride on the
+    cancellation's synced return records, so this does NOT exclude the row from
+    reports (that would double-reverse ITC the returns already handled).
+
+    Resolved by server id, then invoice number, then local id. Idempotent:
+    cancelling an already-cancelled purchase succeeds.
+    """
+    if (payload.server_purchase_id is None
+            and not payload.invoice_number
+            and payload.client_purchase_id is None):
+        return JSONResponse(
+            status_code=400,
+            content={"message": "Need server_purchase_id, invoice_number or client_purchase_id"},
+        )
+
+    q = db.query(Purchase).filter(Purchase.shop_id == current_shop.id)
+    if payload.server_purchase_id is not None:
+        q = q.filter(Purchase.id == payload.server_purchase_id)
+    elif payload.invoice_number:
+        q = q.filter(Purchase.invoice_number == payload.invoice_number)
+    else:
+        q = q.filter(Purchase.local_id == payload.client_purchase_id)
+
+    purchase = q.first()
+    if not purchase:
+        return JSONResponse(status_code=404, content={"message": "Purchase not found"})
+
+    if not purchase.is_cancelled:
+        purchase.is_cancelled = 1
+        purchase.cancelled_at = (
+            epoch_ms_to_local(payload.cancelled_at) if payload.cancelled_at else datetime.utcnow()
+        )
+        db.commit()
+
+    return {"message": "Purchase cancelled", "purchase_id": purchase.id}
 
 
 def _apply_sales_tax_to_product(sp: ShopProduct | None, item) -> None:

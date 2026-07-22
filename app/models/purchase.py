@@ -50,6 +50,11 @@ class Purchase(Base):
     availed_itc_cess = Column(Float, nullable=False, default=0.0)
     purchase_source = Column(String, nullable=False, default="DOMESTIC")
 
+    # Voided by a client purchase-cancel. Status only: the ITC/inventory unwind
+    # rides on the synced return records, so reports need not exclude this row.
+    is_cancelled = Column(Integer, nullable=False, default=0)
+    cancelled_at = Column(DateTime, nullable=True)
+
     created_at = Column(DateTime, default=local_now)
 
     # Server-set, auto-bumped on every ORM update — delta-pull cursor (S5).

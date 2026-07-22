@@ -135,6 +135,21 @@ def _add_credit_columns_to_purchases() -> None:
                 conn.execute(text(sql))
         conn.commit()
 
+def _add_purchase_cancel_columns() -> None:
+    """Void columns for purchase cancellation. Idempotent; create_all adds them
+       on a fresh DB, this ALTERs an existing one."""
+    from sqlalchemy import inspect, text
+    cols_to_add = {
+        "is_cancelled": "ALTER TABLE purchases ADD COLUMN is_cancelled INTEGER NOT NULL DEFAULT 0",
+        "cancelled_at": "ALTER TABLE purchases ADD COLUMN cancelled_at TIMESTAMP NULL",
+    }
+    with engine.connect() as conn:
+        existing = {c["name"] for c in inspect(engine).get_columns("purchases")}
+        for col, sql in cols_to_add.items():
+            if col not in existing:
+                conn.execute(text(sql))
+        conn.commit()
+
 def _add_sync_idempotency_columns() -> None:
     """Idempotency keys for offline-replay dedupe (Sync audit S2):
        • purchase_returns.local_id  — dedupe debit-note pushes on (shop_id, local_id)
@@ -201,6 +216,11 @@ try:
     _add_credit_columns_to_purchases()
 except Exception as e:  # pragma: no cover
     print(f"[startup] credit-columns migration skipped: {e}")
+
+try:
+    _add_purchase_cancel_columns()
+except Exception as e:  # pragma: no cover
+    print(f"[startup] purchase-cancel-columns migration skipped: {e}")
 
 
 # ──────────────────────────────────────────────────────────────────────

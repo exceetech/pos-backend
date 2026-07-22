@@ -130,25 +130,27 @@ def sync_credit(
     # Amounts arrive as magnitudes for every type except PURCHASE_RETURN, which
     # is signed negative by the client. Enforced here rather than trusted, so a
     # malformed request can't invert a balance.
-    if data.type in ("ADD", "PURCHASE_CREDIT", "PAY", "WRITE_OFF", "REFUND"):
+    if data.type in ("ADD", "PURCHASE_CREDIT", "PAY", "WRITE_OFF", "REFUND",
+                     "SALE_RETURN", "BILL_CANCEL", "DEBIT_NOTE"):
         if data.amount <= 0:
             raise HTTPException(
                 status_code=400,
                 detail=f"{data.type} amount must be greater than 0"
             )
-    elif data.type == "PURCHASE_RETURN":
-        if data.amount > 0:
-            raise HTTPException(
-                status_code=400,
-                detail="PURCHASE_RETURN amount must be zero or negative"
-            )
+    # PURCHASE_RETURN is sign-agnostic on purpose. Older clients sent it as a
+    # NEGATIVE amount (added to lower the debt); the current client sends a
+    # POSITIVE magnitude (the shared adjustment core normalises every type to a
+    # magnitude and carries direction in the type). Both must lower what is
+    # owed to the supplier, so it is applied as -abs() below and not validated
+    # for sign here — validating either way would reject one of the two clients.
 
     if data.type == "ADD" or data.type == "PURCHASE_CREDIT":
         account.due_amount += data.amount
     elif data.type == "PAY":
         account.due_amount -= data.amount
     elif data.type == "PURCHASE_RETURN":
-        account.due_amount += data.amount
+        # Always lowers the payable, whichever sign the client used.
+        account.due_amount -= abs(data.amount)
 
     # WRITE_OFF and REFUND replace the old catch-all SETTLE. One type meaning
     # two opposite events — debt forgiven vs money handed back — is what forced
@@ -169,6 +171,19 @@ def sync_credit(
     # how much was written off or handed back.
     elif data.type in ("WRITE_OFF", "REFUND"):
         account.due_amount = 0
+
+    # Bill adjustments from the app, all arriving as positive magnitudes
+    # (validated above). The client has already clamped each to what the bill
+    # still had on credit, so the server just applies the delta — the same
+    # trust model as PAY.
+    #
+    #   DEBIT_NOTE   an extra charge on a credit bill    → debt goes UP
+    #   SALE_RETURN  a credit note put back on the bill  → debt comes DOWN
+    #   BILL_CANCEL  a cancelled credit bill             → debt comes DOWN
+    elif data.type == "DEBIT_NOTE":
+        account.due_amount += data.amount
+    elif data.type in ("SALE_RETURN", "BILL_CANCEL"):
+        account.due_amount -= data.amount
 
     # Still accepted so older app builds keep working through the rollover.
     # Clients on this version no longer send it.

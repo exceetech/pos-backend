@@ -4,6 +4,16 @@ from pydantic import BaseModel
 from typing import List, Optional
 
 
+class CancelPurchaseRequest(BaseModel):
+    """Void an already-synced purchase. Resolved by server id when known, else
+    by invoice_number, else by (shop, client_purchase_id/local_id)."""
+    invoice_number: Optional[str] = None
+    client_purchase_id: Optional[int] = None
+    server_purchase_id: Optional[int] = None
+    client_device_id: Optional[str] = None
+    cancelled_at: Optional[int] = None  # epoch millis
+
+
 class PurchaseItemDto(BaseModel):
     local_id: int
     shop_product_id: Optional[int] = None
