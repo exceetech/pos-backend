@@ -4,11 +4,17 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
 from app.database import get_db
+from app.dependencies import require_admin
 from app.models.shop import Shop
 from app.models.subscription import Subscription
 from app.firebase_service import send_broadcast
 
-router = APIRouter()
+# Security fix: this router previously had NO authentication of any kind —
+# broadcast-to-every-device, archived-shop PII lookup by email, and the
+# restore-shop workspace swap were all reachable by anyone who could hit the
+# API. Gated with the same require_admin shared-secret guard used by
+# admin_catalog_routes.py (see app/dependencies.py for details).
+router = APIRouter(dependencies=[Depends(require_admin)])
 
 
 # ─────────────────────────────────────────────────────────────────────────────

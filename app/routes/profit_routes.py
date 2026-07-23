@@ -160,7 +160,22 @@ def get_profit(
         product_map[pid]["returned_qty"] += qty_returned
         product_map[pid]["returned_cost"] += cost_returned
 
+    # Audit Round 2, P-3 (fixed 2026-07-23): snapshot the FULL product map
+    # (every product with real sales/returns this period) before the
+    # inventory-history filter below narrows it down. A product with no
+    # InventoryLog rows — e.g. trackInventory=false, or stock predating this
+    # logging — has completely legitimate revenue/cost/profit from SaleItem,
+    # and was previously being silently dropped from the summary totals
+    # entirely, not just the per-product breakdown table. Per your decision:
+    # summary totals now reflect every real sale; the per-product breakdown
+    # and inventory figures (added/remaining/loss) still only make sense for
+    # products that actually have inventory history, so that part keeps the
+    # filter.
+    all_products_map = dict(product_map)
+
     # ================= INVENTORY FILTER (NO DATE FILTER HERE) =================
+    # This filtered map now feeds ONLY the per-product breakdown list and the
+    # inventory-figures loop below — not the summary totals.
     inventory_ids = db.query(InventoryLog.product_id).filter(
         InventoryLog.shop_id == current_shop.id,
         InventoryLog.is_active == True
@@ -194,12 +209,93 @@ def get_profit(
         loss_amount = sum(l.quantity * l.price for l in logs if l.type == "LOSS")
         raw_expense = sum(l.quantity * l.price for l in logs if l.type == "ADD")
 
-        # Clean genuine purchases by stripping out returned stock
-        added = raw_added - product_map[pid].get("returned_qty", 0.0)
-        expense = raw_expense - product_map[pid].get("returned_cost", 0.0)
+        # Audit Round 2, P-1 (fixed 2026-07-23): this used to subtract
+        # product_map[pid]["returned_qty"/"returned_cost"] here, but those
+        # values come from CUSTOMER SALES RETURNS (CreditNoteItem, computed
+        # above) — nothing to do with how much stock was purchased. There is
+        # no "PURCHASE_RETURN" InventoryLog type (see models/inventory_log.py),
+        # so subtracting a sales-return quantity from purchased/expense stock
+        # was pure variable-name reuse, not a real adjustment. It silently
+        # understated "Added"/"Expense" (and therefore "Remaining") by the
+        # sales-return amount on every product that had a customer return.
+        # Sales returns are already correctly applied to qty/revenue/cost/
+        # profit further up (the `product_map[pid]["qty"] -= qty_returned`
+        # block) and need no second adjustment here.
+        added = raw_added
+        expense = raw_expense
+
+        # Audit Round 2, P-2 (fixed 2026-07-23): the app writes InventoryLog
+        # rows with several more types than this query used to recognize —
+        # confirmed by grep: ADD, SALE, LOSS, RETURN (purchase return to
+        # supplier — InventoryReductionRepository.kt), ADJUST (manual stock
+        # count correction — InventoryManager.setStock), and CANCEL_RESTOCK
+        # (bill cancellation — BillDetailsActivity.kt). All of them sync to
+        # the backend unfiltered (SyncManager.kt syncInventory), but this
+        # query only ever checked "ADD" and "LOSS", so a cancelled bill's
+        # restock or a supplier return never moved "Remaining" here even
+        # though the rows were sitting right there in the database.
+        #
+        # Added now:
+        #   CANCEL_RESTOCK → treated like ADD for physical quantity (units
+        #     are genuinely back in stock), but NOT added to "expense" — no
+        #     new money was spent, so counting it as purchase expense would
+        #     overstate spend for a sale that was voided, not re-bought.
+        #   RETURN (to supplier) → subtracted from physical quantity only,
+        #     for the same reason in reverse: "expense" here means money
+        #     spent on ADD-type purchases, and a later return doesn't
+        #     retroactively un-spend that money without a separate refund
+        #     record, so leaving raw_expense alone is the conservative call.
+        #
+        #   SALE → intentionally not read from InventoryLog at all: "sold"
+        #     below already comes from SaleItem (product_map[pid]["qty"]),
+        #     which is the authoritative revenue/cost source; counting SALE
+        #     rows here too would double-subtract the same units.
+        restock_qty = sum(l.quantity for l in logs if l.type == "CANCEL_RESTOCK")
+        purchase_return_qty = sum(l.quantity for l in logs if l.type == "RETURN")
+
+        added += restock_qty
 
         sold = product_map[pid]["qty"]
-        remaining = added - sold - loss_qty
+
+        # Audit Round 2, ADJUST fix (2026-07-23): a manual stock-count
+        # correction (InventoryManager.resetStock) logs the resulting stock
+        # as an ABSOLUTE count, not a delta — so it can't just be added into
+        # the additive added/sold/loss/return formula above like every other
+        # type. Instead: if a correction happened within the queried window,
+        # treat its logged quantity as a checkpoint ("remaining was exactly
+        # this, at this moment") and only apply everything that happened
+        # AFTER that checkpoint on top of it. Everything before the most
+        # recent correction is irrelevant to "remaining" by definition — the
+        # correction already accounted for it. If no correction exists in
+        # the window, this falls back to the original from-zero formula.
+        adjust_logs = [l for l in logs if l.type == "ADJUST"]
+        last_adjust = max(adjust_logs, key=lambda l: l.created_at) if adjust_logs else None
+
+        if last_adjust is not None:
+            anchor_time = last_adjust.created_at
+            anchor_qty = last_adjust.quantity  # absolute count at that moment
+
+            post_add = sum(l.quantity for l in logs if l.type == "ADD" and l.created_at > anchor_time)
+            post_restock = sum(l.quantity for l in logs if l.type == "CANCEL_RESTOCK" and l.created_at > anchor_time)
+            post_loss_qty = sum(l.quantity for l in logs if l.type == "LOSS" and l.created_at > anchor_time)
+            post_return_qty = sum(l.quantity for l in logs if l.type == "RETURN" and l.created_at > anchor_time)
+
+            # "sold" above is the WHOLE period's sold quantity (correct for
+            # revenue/cost/profit, which must never be truncated) — but
+            # "remaining" after a checkpoint only cares about sales that
+            # happened after it, so this is a separate, narrower query.
+            post_sold_query = db.query(func.sum(SaleItem.quantity)).filter(
+                SaleItem.shop_id == current_shop.id,
+                SaleItem.product_id == pid,
+                SaleItem.created_at > anchor_time
+            )
+            if filter == "custom" and end:
+                post_sold_query = post_sold_query.filter(SaleItem.created_at < end)
+            post_sold = post_sold_query.scalar() or 0.0
+
+            remaining = anchor_qty + post_add + post_restock - post_sold - post_loss_qty - post_return_qty
+        else:
+            remaining = added - sold - loss_qty - purchase_return_qty
 
         product_map[pid]["added"] = added
         product_map[pid]["sold"] = sold
@@ -211,19 +307,24 @@ def get_profit(
         total_expense += expense
 
     # ================= SUMMARY =================
-    total_revenue = sum(p["revenue"] for p in product_map.values())
-    total_cost = sum(p["cost"] for p in product_map.values())
+    # P-3: totals come from the unfiltered snapshot (every real sale),
+    # not the inventory-history-filtered `product_map`.
+    total_revenue = sum(p["revenue"] for p in all_products_map.values())
+    total_cost = sum(p["cost"] for p in all_products_map.values())
 
     final_profit = total_revenue - total_cost - total_loss
 
     growth_percentage = None
-    if filter in ["today", "week", "month"] and inventory_set:
-        inv_list = list(inventory_set)
-        
+    if filter in ["today", "week", "month"]:
+        # P-3: previously gated on `inventory_set` being non-empty and
+        # scoped to only inventory-tracked products (`inv_list`) — now that
+        # final_profit above includes every product, the previous-period
+        # comparison must too, or growth% would compare an all-products
+        # figure against a tracked-products-only one. Scoped to shop_id only.
+
         # Previous Sales Profit
         prev_sales_profit = db.query(func.sum(SaleItem.total_revenue - SaleItem.total_cost)).filter(
             SaleItem.shop_id == current_shop.id,
-            SaleItem.product_id.in_(inv_list),
             SaleItem.created_at >= prev_start,
             SaleItem.created_at < prev_end
         ).scalar() or 0.0
@@ -235,7 +336,6 @@ def get_profit(
             Bill, CreditNote.original_invoice_number == Bill.bill_number
         ).filter(
             CreditNote.shop_id == current_shop.id,
-            CreditNoteItem.product_id.in_(inv_list),
             CreditNote.created_at >= prev_start,
             CreditNote.created_at < prev_end,
             or_(
@@ -244,10 +344,10 @@ def get_profit(
             )
         ).scalar() or 0.0
 
-        # Previous Loss
+        # Previous Loss (inherently inventory-scoped — InventoryLog only
+        # exists for tracked products, so no product_id filter is needed).
         prev_loss = db.query(func.sum(InventoryLog.quantity * InventoryLog.price)).filter(
             InventoryLog.shop_id == current_shop.id,
-            InventoryLog.product_id.in_(inv_list),
             InventoryLog.is_active == True,
             InventoryLog.type == "LOSS",
             InventoryLog.created_at >= prev_start,

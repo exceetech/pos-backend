@@ -154,6 +154,7 @@ def _add_sync_idempotency_columns() -> None:
     """Idempotency keys for offline-replay dedupe (Sync audit S2):
        • purchase_returns.local_id  — dedupe debit-note pushes on (shop_id, local_id)
        • inventory_logs.client_uid  — dedupe inventory pushes on a stable client key
+       • scrap_entries.local_id     — dedupe scrap pushes on (shop_id, local_id)
        Idempotent; safe on fresh DBs (create_all already added it) and repeats."""
     from sqlalchemy import inspect, text
     targets = {
@@ -161,13 +162,23 @@ def _add_sync_idempotency_columns() -> None:
             "ALTER TABLE purchase_returns ADD COLUMN local_id INTEGER NULL"),
         "inventory_logs": ("client_uid",
             "ALTER TABLE inventory_logs ADD COLUMN client_uid VARCHAR NULL"),
+        "scrap_entries": ("local_id",
+            "ALTER TABLE scrap_entries ADD COLUMN local_id INTEGER NULL"),
     }
     with engine.connect() as conn:
         inspector = inspect(engine)
+        existing_tables = set(inspector.get_table_names())
         for table, (col, sql) in targets.items():
+            if table not in existing_tables:
+                continue
             existing = {c["name"] for c in inspector.get_columns(table)}
             if col not in existing:
                 conn.execute(text(sql))
+        if "scrap_entries" in existing_tables:
+            conn.execute(text(
+                "CREATE INDEX IF NOT EXISTS ix_scrap_entries_shop_local "
+                "ON scrap_entries (shop_id, local_id)"
+            ))
         conn.commit()
 
 try:
@@ -290,30 +301,20 @@ def _add_gstr_support_columns() -> None:
             ("created_at",    "created_at TIMESTAMP NULL"),
             # active — kept separate from is_cancelled (void vs. archive).
             ("active",        "active BOOLEAN DEFAULT TRUE"),
+            # Server-side credit account link (Report 1 S-2) — lets credit
+            # reconciliation attribute a bill to its account directly.
+            ("credit_account_id", "credit_account_id INTEGER NULL"),
         ],
-        "gst_sales_records": [
-            ("customer_name", "customer_name VARCHAR NULL"),
-            ("business_name", "business_name VARCHAR NULL"),
-            ("customer_phone", "customer_phone VARCHAR NULL"),
-            ("customer_state", "customer_state VARCHAR NULL"),
-            ("customer_state_code", "customer_state_code VARCHAR NULL"),
-            ("reverse_charge", "reverse_charge VARCHAR NOT NULL DEFAULT 'N'"),
-            ("gstr_invoice_type", "gstr_invoice_type VARCHAR NOT NULL DEFAULT 'Regular'"),
-            ("ecommerce_gstin", "ecommerce_gstin VARCHAR NULL"),
-            ("ecommerce_operator_name", "ecommerce_operator_name VARCHAR NULL"),
-            ("eco_nature_of_supply", "eco_nature_of_supply VARCHAR NULL"),
-            ("eco_document_type", "eco_document_type VARCHAR NULL"),
-            ("eco_supplier_gstin", "eco_supplier_gstin VARCHAR NULL"),
-            ("eco_supplier_name", "eco_supplier_name VARCHAR NULL"),
-            ("eco_recipient_gstin", "eco_recipient_gstin VARCHAR NULL"),
-            ("eco_recipient_name", "eco_recipient_name VARCHAR NULL"),
-            ("eco_role", "eco_role VARCHAR NULL"),
-            ("cess_rate", "cess_rate DOUBLE PRECISION NOT NULL DEFAULT 0.0"),
-            ("cess_amount", "cess_amount DOUBLE PRECISION NOT NULL DEFAULT 0.0"),
-            ("uqc", "uqc VARCHAR NULL"),
-            ("hsn_description", "hsn_description VARCHAR NULL"),
-            ("is_cancelled", "is_cancelled BOOLEAN NOT NULL DEFAULT FALSE"),
+        "credit_transactions": [
+            # Idempotency key (duplicate-txn guard): a stable identifier the
+            # client derives per source event. /credit/sync dedupes on
+            # (shop_id, source_doc) so a retried sync can't double-apply a
+            # balance delta. Nullable — older clients don't send it yet.
+            ("source_doc", "source_doc VARCHAR NULL"),
         ],
+        # "gst_sales_records" column list REMOVED (Report 3, C3) — the table
+        # itself is now dropped by _drop_legacy_gst_sales_records_table()
+        # below, so there's nothing left to add columns to.
     }
 
     inspector = inspect(engine)
@@ -333,6 +334,13 @@ def _add_gstr_support_columns() -> None:
                 "CREATE INDEX IF NOT EXISTS ix_bills_client_key "
                 "ON bills (shop_id, client_device_id, client_bill_id)"
             ))
+
+        # Lookup index for the credit-transaction idempotency key.
+        if "credit_transactions" in existing_tables:
+            conn.execute(text(
+                "CREATE INDEX IF NOT EXISTS ix_credit_transactions_source_doc "
+                "ON credit_transactions (shop_id, source_doc)"
+            ))
         conn.commit()
 
 
@@ -340,6 +348,31 @@ try:
     _add_gstr_support_columns()
 except Exception as e:  # pragma: no cover
     print(f"[startup] GSTR support column migration skipped: {e}")
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Retire the legacy `gst_sales_records` table (Report 3 audit, fix order
+# C3). It duplicated `gst_sales_invoice`(+items), which has been the sole
+# GST-reporting source of truth — in-app and backend, including the GST
+# summary email — since C1/C2 of the same fix. The client stopped writing
+# and syncing this table in C2; nothing reads or writes it anymore, so it
+# is safe to drop. This destroys any historical rows still in it — data
+# retained there was already a duplicate of gst_sales_invoice(+items) for
+# any bill created after the C1 repoint, and rows from before that are
+# accepted as lost per the explicit decision to fully retire this table.
+# ──────────────────────────────────────────────────────────────────────
+def _drop_legacy_gst_sales_records_table() -> None:
+    from sqlalchemy import text
+
+    with engine.connect() as conn:
+        conn.execute(text("DROP TABLE IF EXISTS gst_sales_records"))
+        conn.commit()
+
+
+try:
+    _drop_legacy_gst_sales_records_table()
+except Exception as e:  # pragma: no cover
+    print(f"[startup] legacy gst_sales_records drop skipped: {e}")
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -464,6 +497,48 @@ try:
     _add_sale_items_bill_number()
 except Exception as e:  # pragma: no cover — never crash startup
     print(f"[startup] sale_items.bill_number migration skipped: {e}")
+
+
+# ──────────────────────────────────────────────────────────────────────
+# sale_items.client_bill_id / client_device_id (Report 5 fix): idempotency
+# key for /sales/create, mirroring bills.client_bill_id / client_device_id.
+# /sales/create used to be fire-and-forget with no retry and no dedupe —
+# a failed push silently dropped that sale from profit analytics forever.
+# The app now backfills failed pushes via SyncManager, so a retry must be
+# recognized instead of duplicating rows. Idempotent ALTER for already-
+# deployed databases whose sale_items table predates these columns.
+# ──────────────────────────────────────────────────────────────────────
+def _add_sale_items_idempotency_cols() -> None:
+    from sqlalchemy import inspect, text
+
+    table = "sale_items"
+    inspector = inspect(engine)
+    if table not in set(inspector.get_table_names()):
+        return
+
+    with engine.connect() as conn:
+        existing = {c["name"] for c in inspector.get_columns(table)}
+        _add_column_if_missing(
+            conn, table, existing, "client_bill_id", "client_bill_id INTEGER NULL"
+        )
+        _add_column_if_missing(
+            conn, table, existing, "client_device_id", "client_device_id VARCHAR NULL"
+        )
+
+        index_names = {ix["name"] for ix in inspect(engine).get_indexes(table)}
+        if "ix_sale_items_client_bill_id" not in index_names:
+            conn.execute(text(
+                "CREATE INDEX IF NOT EXISTS ix_sale_items_client_bill_id "
+                "ON sale_items (client_bill_id)"
+            ))
+
+        conn.commit()
+
+
+try:
+    _add_sale_items_idempotency_cols()
+except Exception as e:  # pragma: no cover — never crash startup
+    print(f"[startup] sale_items idempotency-columns migration skipped: {e}")
 
 
 # ──────────────────────────────────────────────────────────────────────

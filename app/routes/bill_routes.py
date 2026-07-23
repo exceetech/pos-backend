@@ -290,7 +290,8 @@ def create_bill(
         invoice_type=data.invoice_type,
         is_gst_invoice=data.is_gst_invoice,
         client_bill_id=data.client_bill_id,
-        client_device_id=data.client_device_id
+        client_device_id=data.client_device_id,
+        credit_account_id=data.credit_account_id
     )
     
     if data.created_at:

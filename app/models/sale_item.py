@@ -18,6 +18,13 @@ class SaleItem(Base):
     # Link to the original bill so cancellations can delete the analytics rows
     bill_number = Column(String, nullable=True, index=True)
 
+    # Idempotency key (Report 5 fix): mirrors Bill.client_bill_id /
+    # Bill.client_device_id. /sales/create used to be fire-and-forget with
+    # no retry and no dedupe — a retried or backfilled push must not create
+    # a second batch of rows for the same local sale.
+    client_bill_id = Column(Integer, nullable=True, index=True)
+    client_device_id = Column(String, nullable=True)
+
     quantity = Column(Float, nullable=False)
 
     selling_price = Column(Float, nullable=False)

@@ -41,6 +41,14 @@ class Bill(Base):
     invoice_type = Column(String, nullable=False, default="B2C")
     is_gst_invoice = Column(Boolean, nullable=False, default=False)
 
+    # Server-side credit account this bill is charged to, if any (Report 1
+    # S-2). Not a hard FK — mirrors the gst_sales_invoice.bill_id pattern —
+    # since the client may push a bill before its credit account has synced
+    # and received a server id. Lets server-side credit reconciliation and
+    # cross-device restore attribute a bill to its account directly, instead
+    # of relying only on credit_transactions.reference_invoice.
+    credit_account_id = Column(Integer, nullable=True, index=True)
+
     # ── Idempotency key (duplicate-bill guard) ──
     # The app's local Room bill id + device id. /bills/create refuses to
     # insert a second row for the same (shop, device, local bill), so a

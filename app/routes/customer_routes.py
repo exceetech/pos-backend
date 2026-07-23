@@ -1,24 +1,20 @@
 from fastapi import APIRouter, Depends, HTTPException
-from fastapi.security import OAuth2PasswordBearer
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
 from typing import List, Optional
 
 from app.database import get_db
 from app.models.customer import Customer
-from app.security import decode_token
+# Report 5 fix: this file used to define its own local get_current_shop_id
+# — a thinner duplicate of app.dependencies.get_current_shop_id that skipped
+# the `scope` check (and every other check). That meant a password-reset-
+# scoped token could still create/edit customers even after the scope check
+# was added elsewhere, because this was different, drifted code. Using the
+# shared dependency closes that gap and means any future fix to it reaches
+# this file automatically.
+from app.dependencies import get_current_shop_id
 
 router = APIRouter(prefix="/customers", tags=["Customers"])
-
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="auth/login")
-
-
-def get_current_shop_id(token: str = Depends(oauth2_scheme)):
-    payload = decode_token(token)
-    shop_id = payload.get("shop_id")
-    if shop_id is None:
-        raise HTTPException(status_code=401, detail="Invalid token")
-    return shop_id
 
 
 class CustomerDto(BaseModel):
@@ -31,6 +27,13 @@ class CustomerDto(BaseModel):
     state: Optional[str] = None
     state_code: Optional[str] = None
     updated_at: int = 0
+    # Report 1 S-6: previously never sent — the customer's link to their
+    # credit account and soft-delete state didn't propagate across devices.
+    # credit_account_id is the account's SERVER id (client resolves it the
+    # same way bills do — see SyncManager.syncCustomers), null if unlinked
+    # or not yet synced.
+    credit_account_id: Optional[int] = None
+    is_active: bool = True
 
 
 class CustomerSyncRequest(BaseModel):
@@ -53,6 +56,8 @@ class CustomerRemote(BaseModel):
     state: Optional[str] = None
     state_code: Optional[str] = None
     updated_at: int = 0
+    credit_account_id: Optional[int] = None
+    is_active: bool = True
 
 
 class CustomerLookupResponse(BaseModel):
@@ -73,6 +78,8 @@ class CustomerAccountRequest(BaseModel):
     state: Optional[str] = None
     state_code: Optional[str] = None
     updated_at: int = 0
+    credit_account_id: Optional[int] = None
+    is_active: bool = True
 
 
 def _to_remote(c: Customer) -> CustomerRemote:
@@ -86,6 +93,8 @@ def _to_remote(c: Customer) -> CustomerRemote:
         state=c.state,
         state_code=c.state_code,
         updated_at=c.updated_at_ms or 0,
+        credit_account_id=c.credit_account_id,
+        is_active=c.is_active if c.is_active is not None else True,
     )
 
 
@@ -114,7 +123,12 @@ def _apply_upsert(db: Session, shop_id: int, c) -> Customer:
             existing.state = c.state if c.state else existing.state
             existing.state_code = c.state_code if c.state_code else existing.state_code
             existing.updated_at_ms = c.updated_at or existing.updated_at_ms
-            existing.is_active = True
+            # Report 1 S-6: credit_account_id and is_active now propagate
+            # from the client instead of being dropped/forced. None is a
+            # meaningful "unlinked" state here (unlike the blank-string
+            # fields above), so it's always applied, not guarded by "if set".
+            existing.credit_account_id = getattr(c, "credit_account_id", None)
+            existing.is_active = getattr(c, "is_active", True)
         return existing
     row = Customer(
         shop_id=shop_id,
@@ -126,7 +140,8 @@ def _apply_upsert(db: Session, shop_id: int, c) -> Customer:
         state=c.state,
         state_code=c.state_code,
         updated_at_ms=c.updated_at or 0,
-        is_active=True,
+        credit_account_id=getattr(c, "credit_account_id", None),
+        is_active=getattr(c, "is_active", True),
     )
     db.add(row)
     db.flush()

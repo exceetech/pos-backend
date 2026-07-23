@@ -30,7 +30,14 @@ class CreditTransaction(Base):
     shop_id = Column(Integer, nullable=False, index=True)  # 🔥 ADD THIS
 
     amount = Column(Float, nullable=False)
-    type = Column(String, nullable=False)  # ADD / PAY / SETTLE / PURCHASE_CREDIT / PURCHASE_RETURN
+    type = Column(String, nullable=False)  # ADD / PAY / SETTLE / PURCHASE_CREDIT / PURCHASE_RETURN / WRITE_OFF / REFUND / SALE_RETURN / BILL_CANCEL / DEBIT_NOTE
     reference_invoice = Column(String, nullable=True)
+
+    # Idempotency key (duplicate-txn guard): a stable identifier the client
+    # derives per source event (e.g. "CN:12", "PBUY:5", "BILL_CANCEL:41").
+    # /credit/sync dedupes on (shop_id, source_doc) so a retried sync after a
+    # lost HTTP response can't double-apply the balance delta. Nullable so
+    # older app builds that don't send it keep working through the rollover.
+    source_doc = Column(String, nullable=True)
 
     created_at = Column(DateTime, default=local_now)

@@ -1,24 +1,20 @@
 from fastapi import APIRouter, Depends, HTTPException
-from fastapi.security import OAuth2PasswordBearer
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
 from typing import List, Optional
 
 from app.database import get_db
 from app.models.shop_category import ShopCategory
-from app.security import decode_token
+# Report 5 fix: this file used to define its own local get_current_shop_id
+# — a thinner duplicate that skipped the `scope` check (and every other
+# check) that the real app.dependencies.get_current_shop_id has. That meant
+# a password-reset-scoped token could still authenticate here even after
+# the scope check was added elsewhere, because this was different code that
+# happened to look similar. Using the shared dependency means any future
+# fix to it reaches this file automatically.
+from app.dependencies import get_current_shop_id
 
 router = APIRouter(prefix="/categories", tags=["Categories"])
-
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="auth/login")
-
-
-def get_current_shop_id(token: str = Depends(oauth2_scheme)):
-    payload = decode_token(token)
-    shop_id = payload.get("shop_id")
-    if shop_id is None:
-        raise HTTPException(status_code=401, detail="Invalid token")
-    return shop_id
 
 
 class CategoryDto(BaseModel):

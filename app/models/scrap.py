@@ -19,6 +19,12 @@ class Scrap(Base):
     id = Column(Integer, primary_key=True, index=True)
     shop_id = Column(Integer, ForeignKey("shops.id"), nullable=False, index=True)
 
+    # Idempotency key: the client's local Room scrap_table.id. Lets
+    # /scrap/sync dedupe a retried/duplicate offline push on
+    # (shop_id, local_id) instead of inserting a second row every time
+    # the response is lost after the server already committed it.
+    local_id = Column(Integer, nullable=True, index=True)
+
     shop_product_id = Column(Integer, ForeignKey("shop_products.id"), nullable=True)
 
     product_name = Column(String, nullable=False)

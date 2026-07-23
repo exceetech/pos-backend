@@ -4,24 +4,16 @@ from sqlalchemy.orm import Session
 from app.database import get_db
 from app.models.credit import CreditAccount, CreditTransaction
 from app.schemas.credit_schema import CreditAccountCreate, CreditTransactionCreate
-from fastapi import Depends
-from fastapi.security import OAuth2PasswordBearer
-from app.security import decode_token
+# Report 5 fix: this file used to define its own local get_current_shop_id
+# — a thinner duplicate of app.dependencies.get_current_shop_id that skipped
+# the `scope` check (and every other check). That meant a password-reset-
+# scoped token could still create/manage credit accounts and transactions
+# even after the scope check was added elsewhere, because this was
+# different, drifted code. Using the shared dependency closes that gap and
+# means any future fix to it reaches this file automatically.
+from app.dependencies import get_current_shop_id
 
 router = APIRouter(prefix="/credit", tags=["Credit"])
-
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="auth/login")
-
-
-def get_current_shop_id(token: str = Depends(oauth2_scheme)):
-
-    payload = decode_token(token)
-    shop_id = payload.get("shop_id")
-
-    if shop_id is None:
-        raise HTTPException(status_code=401, detail="Invalid token")
-
-    return shop_id
 
 # ================= CREATE ACCOUNT =================
 @router.post("/account")
@@ -114,6 +106,21 @@ def sync_credit(
     if not account:
         raise HTTPException(status_code=404, detail="Account not found")
 
+    # ── IDEMPOTENCY GUARD ──
+    # A retried or concurrent sync of the same client-side event must not
+    # double-apply the balance delta. If the client sent a source_doc and a
+    # transaction with that (shop_id, source_doc) already exists, this is a
+    # retry (e.g. the client never saw the first response) — return the
+    # existing row as-is instead of inserting/adjusting again. Mirrors the
+    # bill-create idempotency pattern in bill_routes.py.
+    if data.source_doc:
+        existing_txn = db.query(CreditTransaction).filter(
+            CreditTransaction.shop_id == shop_id,
+            CreditTransaction.source_doc == data.source_doc
+        ).first()
+        if existing_txn:
+            return {"status": "success", "duplicate": True, "id": existing_txn.id}
+
     # ── SIGN CONVENTION — DO NOT PUT PAY BACK WITH PURCHASE_RETURN ───────
     #
     #   ADD / PURCHASE_CREDIT  client sends POSITIVE  → debt goes UP
@@ -197,13 +204,14 @@ def sync_credit(
         shop_id=shop_id,
         amount=data.amount,
         type=data.type,
-        reference_invoice=data.reference_invoice
+        reference_invoice=data.reference_invoice,
+        source_doc=data.source_doc
     )
 
     db.add(txn)
     db.commit()
 
-    return {"status": "success"}
+    return {"status": "success", "duplicate": False, "id": txn.id}
 
 
 # ================= SEARCH =================
@@ -273,22 +281,10 @@ def deactivate_account(
     return {"message": "Account deactivated successfully"}
 
 
-# ================= RESET =================
-@router.patch("/reset")
-def reset_credit(
-    db: Session = Depends(get_db),
-    shop_id: int = Depends(get_current_shop_id)
-):
-
-    db.query(CreditAccount).filter(
-        CreditAccount.shop_id == shop_id
-    ).update({
-        CreditAccount.is_active: False
-    })
-
-    db.commit()
-
-    return {
-        "status": "success",
-        "message": f"Credit reset for shop {shop_id}"
-    }
+# ================= RESET — REMOVED (Report 5) =================
+# This endpoint deactivated EVERY credit account for the shop in one call,
+# with no balance check at all — unlike deactivate_account() just above,
+# which correctly refuses to deactivate an account still owing money. A
+# shop with real outstanding customer debt could have every account hidden
+# in one shot with nothing to show it happened. Confirmed unused by the
+# Android app (declared in ApiService.kt but never called) before removing.

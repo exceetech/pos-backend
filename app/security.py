@@ -1,3 +1,4 @@
+import os
 from passlib.context import CryptContext
 from jose import JWTError, jwt
 from datetime import datetime, timedelta
@@ -19,7 +20,16 @@ def verify_password(plain_password: str, hashed_password: str) -> bool:
 
 # ── JWT ───────────────────────────────────────────────────────────────────────
 
-SECRET_KEY = "eXCeeTechSecretKeyForJWTGeneration"
+# Report 5 fix: was a hardcoded literal — anyone with repo access could forge
+# a valid token for any shop, permanently, with no way to rotate it short of
+# editing source and redeploying. Now read from the environment, matching the
+# EMAIL_ADDRESS / EMAIL_PASSWORD pattern already used elsewhere (email_service.py).
+# The hardcoded string is kept ONLY as a fallback so already-deployed
+# environments that haven't set JWT_SECRET_KEY yet don't break on this
+# deploy — set JWT_SECRET_KEY in the environment and this fallback stops
+# mattering. Every previously-issued token was signed with the old literal
+# either way, so this alone doesn't invalidate anything already out there.
+SECRET_KEY = os.getenv("JWT_SECRET_KEY", "eXCeeTechSecretKeyForJWTGeneration")
 ALGORITHM  = "HS256"
 ACCESS_TOKEN_EXPIRE_HOURS = 24
 

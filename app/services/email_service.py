@@ -116,11 +116,15 @@ eXCee Team
 
 async def send_gst_report_email(shop, report_type: str, start_date: str, end_date: str, db):
     """
-    Generate and email a GST report (gstr1 / gstr2 / gstr3b / hsn).
-    Data sourced from gst_sales_records and gst_purchase_records tables only.
+    Generate and email a GST report (gstr1 / gstr2 / hsn).
+    Sales-side data sourced from gst_sales_invoice(+items) — repointed off
+    the legacy gst_sales_records table per Report 3 fix A2/C1, so this email
+    can no longer disagree with the in-app GSTR-1 screen or drift out of
+    sync with cancellations. Purchase-side unaffected (gst_purchase_records
+    was never part of the dual-write problem).
     """
-    from app.models.gst_sales_record import GstSalesRecord
     from app.models.gst_purchase_record import GstPurchaseRecord
+    from app.util.gst_sales_lookup import get_active_invoice_line_items
     from datetime import datetime
 
     try:
@@ -132,26 +136,21 @@ async def send_gst_report_email(shop, report_type: str, start_date: str, end_dat
     subject_map = {
         "gstr1": "GSTR-1 Outward Supplies Report",
         "gstr2": "GSTR-2 Purchase Register Report",
-        "gstr3b": "GSTR-3B Tax Liability Summary",
         "hsn": "HSN-wise Summary Report"
     }
     subject = f"📊 {subject_map.get(report_type, 'GST Report')} | {start_date} to {end_date} — {shop.shop_name}"
 
     if report_type in ("gstr1", "hsn"):
-        records = db.query(GstSalesRecord).filter(
-            GstSalesRecord.shop_id == shop.id,
-            GstSalesRecord.invoice_date >= start,
-            GstSalesRecord.invoice_date <= end
-        ).all()
+        line_items = get_active_invoice_line_items(db, shop.id, start, end)
         body = (
             f"GST Report: {subject_map.get(report_type)}\n"
             f"Shop: {shop.shop_name} | GSTIN: {shop.store_gstin or 'N/A'}\n"
             f"Period: {start_date} to {end_date}\n\n"
-            f"Total Records:  {len(records)}\n"
-            f"Taxable Value:  Rs.{sum(r.taxable_value for r in records):.2f}\n"
-            f"CGST:           Rs.{sum(r.cgst_amount for r in records):.2f}\n"
-            f"SGST:           Rs.{sum(r.sgst_amount for r in records):.2f}\n"
-            f"IGST:           Rs.{sum(r.igst_amount for r in records):.2f}\n"
+            f"Total Records:  {len(line_items)}\n"
+            f"Taxable Value:  Rs.{sum(item.taxable_amount or 0.0 for _inv, item in line_items):.2f}\n"
+            f"CGST:           Rs.{sum(item.cgst_amount or 0.0 for _inv, item in line_items):.2f}\n"
+            f"SGST:           Rs.{sum(item.sgst_amount or 0.0 for _inv, item in line_items):.2f}\n"
+            f"IGST:           Rs.{sum(item.igst_amount or 0.0 for _inv, item in line_items):.2f}\n"
         )
 
     elif report_type == "gstr2":
@@ -171,32 +170,6 @@ async def send_gst_report_email(shop, report_type: str, start_date: str, end_dat
             f"ITC IGST:       Rs.{sum(r.igst_amount for r in records):.2f}\n"
         )
 
-    elif report_type == "gstr3b":
-        sales = db.query(GstSalesRecord).filter(
-            GstSalesRecord.shop_id == shop.id,
-            GstSalesRecord.invoice_date >= start,
-            GstSalesRecord.invoice_date <= end
-        ).all()
-        purchases = db.query(GstPurchaseRecord).filter(
-            GstPurchaseRecord.shop_id == shop.id,
-            GstPurchaseRecord.invoice_date >= start,
-            GstPurchaseRecord.invoice_date <= end
-        ).all()
-        out_cgst = sum(r.cgst_amount for r in sales)
-        out_sgst = sum(r.sgst_amount for r in sales)
-        out_igst = sum(r.igst_amount for r in sales)
-        itc_cgst = sum(r.cgst_amount for r in purchases)
-        itc_sgst = sum(r.sgst_amount for r in purchases)
-        itc_igst = sum(r.igst_amount for r in purchases)
-        body = (
-            f"GSTR-3B Tax Liability Summary\n"
-            f"Shop: {shop.shop_name} | GSTIN: {shop.store_gstin or 'N/A'}\n"
-            f"Period: {start_date} to {end_date}\n\n"
-            f"OUTWARD TAX: CGST Rs.{out_cgst:.2f} | SGST Rs.{out_sgst:.2f} | IGST Rs.{out_igst:.2f}\n"
-            f"ITC:         CGST Rs.{itc_cgst:.2f} | SGST Rs.{itc_sgst:.2f} | IGST Rs.{itc_igst:.2f}\n"
-            f"NET PAYABLE: CGST Rs.{max(0, out_cgst-itc_cgst):.2f} | "
-            f"SGST Rs.{max(0, out_sgst-itc_sgst):.2f} | IGST Rs.{max(0, out_igst-itc_igst):.2f}\n"
-        )
     else:
         body = f"GST Report for {start_date} to {end_date}\nShop: {shop.shop_name}"
 

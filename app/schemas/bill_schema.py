@@ -57,6 +57,11 @@ class CreateBillRequest(BaseModel):
     invoice_type: str = "B2C"
     is_gst_invoice: bool = False
 
+    # Server-side credit account this bill is charged to (Report 1 S-2).
+    # Optional — the client sends the account's server id (null if the
+    # account hasn't synced yet), and older app versions simply omit it.
+    credit_account_id: Optional[int] = None
+
     # Idempotency key: the app's local bill id + device id. Optional so
     # older app versions still work; when present, /bills/create returns
     # the existing row instead of inserting a duplicate.

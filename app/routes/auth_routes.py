@@ -185,6 +185,17 @@ def change_password(
     current_shop: Shop = Depends(get_current_shop),
     db: Session = Depends(get_db)
 ):
+    # Server-side floor (Sync/Security audit): this is a Form field, not a
+    # Pydantic model, so it doesn't get the min_length=6 constraint added to
+    # ChangePasswordRequest — enforce it explicitly here too, so the
+    # first-login password-change path can't be used to set an empty or
+    # 1-character password.
+    if len(new_password) < 6:
+        raise HTTPException(
+            status_code=400,
+            detail="Password must be at least 6 characters"
+        )
+
     current_shop.password_hash = hash_password(new_password)
     current_shop.is_first_login = False
     db.commit()
@@ -277,11 +288,17 @@ def verify_otp(email: str, otp: str, db: Session = Depends(get_db)):
     shop.reset_otp_expiry = None
     shop.reset_otp_attempts = 0
     db.commit()
+    # Report 5 fix: this used to omit expires_delta entirely, so the token
+    # silently fell back to the standard 24-HOUR session lifetime
+    # (ACCESS_TOKEN_EXPIRE_HOURS in security.py) instead of a short-lived
+    # reset window. Matches the 10-minute window already used below /
+    # previously in generate-reset-token.
     reset_token = create_access_token(
     data={
         "shop_id": shop.id,
         "scope": "password_reset"
-    }
+    },
+    expires_delta=timedelta(minutes=10)
 )
 
     return {
@@ -292,30 +309,16 @@ def verify_otp(email: str, otp: str, db: Session = Depends(get_db)):
     }
 
 
-# ================= GENERATE RESET TOKEN =================
-@router.post("/generate-reset-token")
-def generate_reset_token(email: str, db: Session = Depends(get_db)):
-
-    email = email.strip().lower()
-
-    shop = db.query(Shop).filter(Shop.email == email).first()
-
-    if not shop:
-        raise HTTPException(status_code=404, detail="Shop not found")
-
-    reset_token = create_access_token(
-    data={
-        "shop_id": shop.id,
-        "scope": "password_reset"
-    },
-    expires_delta=timedelta(minutes=10)
-    )
-
-    return {
-        "otp_verified": True,
-        "access_token": reset_token,
-        "token_type": "bearer"
-    }
+# ================= GENERATE RESET TOKEN — REMOVED (Report 5) =================
+# This endpoint used to accept just an `email` query parameter — no OTP, no
+# password, nothing — and hand back a valid password-reset token for that
+# shop. Combined with the missing `scope` check that get_current_shop() used
+# to have (also fixed in this pass), that token worked as a full session
+# credential everywhere, not just for /auth/reset-password: a full account
+# takeover for anyone who knew a registered email address. Confirmed unused
+# by the Android app (no caller anywhere in the client) before removing —
+# the only legitimate path to a reset token is /auth/verify-otp, which
+# actually requires the emailed OTP.
 
 
 # ================= INVALIDATE TOKEN =================
@@ -356,14 +359,13 @@ def reset_password(
 
     return {"message": "Password reset successful"}
 
-# ================= RESET DEVICE (ADMIN) =================
-
-@router.post("/reset-device/{shop_id}")
-def reset_device(shop_id: int, db: Session = Depends(get_db)):
-
-    shop = db.query(Shop).filter(Shop.id == shop_id).first()
-
-    shop.device_id = None
-    db.commit()
-
-    return {"message": "Device reset"}
+# ================= RESET DEVICE (ADMIN) — REMOVED (Report 5) =================
+# This endpoint took a shop_id path parameter and cleared that shop's device
+# lock with NO authentication check of any kind — anyone who could reach the
+# API could unbind any shop's device, defeating the one-device-per-account
+# protection for the entire app. It also had no null-check (an invalid
+# shop_id would 500, not 404). Confirmed unused by the Android app. Device
+# lock is currently permanent-until-support-intervenes by design; if a real
+# "admin resets a customer's device" tool is needed later, it needs a proper
+# admin-auth mechanism first — this codebase doesn't have one yet (see the
+# same gap in admin_routes.py's other endpoints, flagged separately).

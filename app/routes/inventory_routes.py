@@ -128,9 +128,26 @@ def sync_inventory_logs(
             inventory.current_stock = new_stock
             inventory.average_cost = new_avg
 
-        elif log.type in ["SALE", "LOSS", "ADJUST"]:
+        elif log.type in ["SALE", "LOSS"]:
             new_stock = float(inventory.current_stock or 0.0) - log.quantity
             inventory.current_stock = new_stock
+
+        elif log.type == "ADJUST":
+            # Report 5 fix: ADJUST used to share the SALE/LOSS subtraction
+            # branch above, but it is NOT a delta — it's a manual physical
+            # stock-count correction (InventoryManager.resetStock on the
+            # client), and log.quantity carries the ABSOLUTE corrected
+            # count, not an amount to subtract. Treating it as subtractive
+            # meant correcting a product's stock from, say, 5 to 100 wrote
+            # new_stock = 5 - 100 = -95 to the backend instead of 100 — so
+            # the exact tool a shop reaches for to fix a wrong stock number
+            # was actively corrupting it further, often into negative
+            # territory. Now sets the stock directly, matching the
+            # absolute-checkpoint semantics already used correctly in
+            # profit_routes.py's own ADJUST handling.
+            inventory.current_stock = log.quantity
+            if log.price > 0:
+                inventory.average_cost = log.price
 
     db.commit()
 

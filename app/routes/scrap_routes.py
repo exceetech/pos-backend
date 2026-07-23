@@ -30,6 +30,7 @@ router = APIRouter(tags=["Scrap"])
 def _to_model(payload, shop_id: int) -> Scrap:
     return Scrap(
         shop_id          = shop_id,
+        local_id         = getattr(payload, "local_id", None),
         shop_product_id  = payload.shop_product_id,
         product_name     = payload.product_name,
         variant_name     = payload.variant_name,
@@ -85,12 +86,28 @@ def sync_scrap(
                 })
                 continue
 
+            # Idempotent on (shop_id, local_id): a retried/duplicate push of
+            # the same offline row must not insert a second scrap entry —
+            # this mirrors purchase_return_routes.sync_purchase_returns.
+            existing = None
+            if r.local_id is not None:
+                existing = db.query(Scrap).filter(
+                    Scrap.shop_id == current_shop.id,
+                    Scrap.local_id == r.local_id,
+                ).first()
+
+            if existing is not None:
+                response.record_id_map[str(r.local_id)] = existing.id
+                response.success_count += 1
+                continue
+
             row = _to_model(r, current_shop.id)
             db.add(row)
             db.flush()
             response.record_id_map[str(r.local_id)] = row.id
             response.success_count += 1
         except Exception as e:
+            db.rollback()
             response.failed.append({"local_id": r.local_id, "reason": str(e)})
 
     db.commit()

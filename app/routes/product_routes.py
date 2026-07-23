@@ -120,7 +120,18 @@ def get_or_create_global_product(db: Session, normalized: str, shop_id: int) -> 
             # Extremely unlikely (an IntegrityError implies a committed
             # conflicting row), but never return None to callers that
             # immediately dereference gp.id.
-            raise HTTPException(status_code=409, detail="Could not resolve product row")
+            #
+            # Report 5 fix: was status_code=409. 409 is reserved app-wide
+            # for the WORKSPACE_CHANGED signal (dependencies.py) — the
+            # Android WorkspaceInterceptor treats ANY 409 response, from
+            # any endpoint, as "wipe the local database and log out."
+            # This is an unrelated, narrow race-condition fallback with
+            # nothing to do with workspaces; reusing 409 here meant this
+            # rare product-creation race could trigger a full local data
+            # wipe and forced logout. 500 correctly signals "unexpected
+            # server-side condition" without colliding with that reserved
+            # meaning.
+            raise HTTPException(status_code=500, detail="Could not resolve product row")
         return gp
 
 
@@ -339,21 +350,14 @@ def get_my_products(
         for r in results
     ]
 
-# ================= VERIFY PRODUCT (ADMIN ONLY LATER) =================
-@router.put("/verify-product/{product_id}")
-def verify_product(product_id: int, db: Session = Depends(get_db)):
-
-    product = db.query(GlobalProduct)\
-        .filter(GlobalProduct.id == product_id)\
-        .first()
-
-    if not product:
-        raise HTTPException(status_code=404, detail="Product not found")
-
-    product.is_verified = True
-    db.commit()
-
-    return {"message": "Product verified successfully"}
+# ================= VERIFY PRODUCT — REMOVED (Report 5) =================
+# This endpoint had NO authentication of any kind — not even a valid shop
+# login token, let alone an admin check — and let anyone flip is_verified
+# on any global catalog product, which is then visible to every shop via
+# GET /products/catalog. The real, properly-gated admin review workflow is
+# admin_catalog_routes.py (PUT /admin/catalog/variants/{id}/verify), which
+# requires the X-Admin-Token shared secret. Confirmed this endpoint was
+# never called by the Android app before removing it.
 
 
 # ================= DEACTIVATE =================

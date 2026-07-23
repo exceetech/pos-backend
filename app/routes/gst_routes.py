@@ -9,25 +9,24 @@ from app.util.time_utils import local_now, utc_now
 from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
-from sqlalchemy import func
 
 from app.database import get_db
 from app.dependencies import get_current_shop
 from app.models.gst_profile import StoreGstProfile
-from app.models.gst_sales_record import GstSalesRecord
+# GstSalesRecord retired (Report 3, C3) — table dropped, model deleted.
 from app.models.gst_purchase_record import GstPurchaseRecord
 from app.models.purchase import Purchase
 from app.models.purchase_item import PurchaseItem
 from app.models.import_service import ImportService
 from app.models.purchase_import_details import PurchaseImportDetails
 from app.models.purchase_return import PurchaseReturn
+from app.util.gst_sales_lookup import get_active_invoice_line_items, supply_type_of
 from app.schemas.gst_schema import (
     GstProfileUpsert, GstProfileResponse,
-    GstSalesSyncRequest, GstPurchaseSyncRequest,
+    GstPurchaseSyncRequest,
     Gstr1Response, Gstr1B2BInvoice, Gstr1B2CItem,
     Gstr2Response, Gstr2B2bItem, Gstr2B2burItem, Gstr2ImpsItem, Gstr2ImpgItem,
     Gstr2CdnrItem, Gstr2CdnurItem, Gstr2ExempItem, Gstr2HsnsumItem,
-    Gstr3BResponse, Gstr3BSupplyDetail,
     HsnSummaryItem
 )
 
@@ -154,155 +153,13 @@ def get_gst_profile(
 
 
 # ============================================================
-# 4. HSN Summary (SHORT EXAMPLE — REST SAME)
+# 4. GST Sales Records — Batch Sync — REMOVED (Report 3, C3)
 # ============================================================
-
-@router.get("/reports/hsn-summary")
-def get_hsn_summary(
-    start_date: str,
-    end_date: str,
-    db: Session = Depends(get_db),
-    current_shop = Depends(get_current_shop)
-):
-
-    start = datetime.strptime(start_date, "%Y-%m-%d")
-    end = datetime.strptime(end_date, "%Y-%m-%d")
-
-    results = db.query(
-        GstSalesRecord.hsn_code,
-        func.sum(GstSalesRecord.taxable_value)
-    ).filter(
-        GstSalesRecord.shop_id == current_shop.id,
-        GstSalesRecord.invoice_date >= start,
-        GstSalesRecord.invoice_date <= end
-    ).group_by(GstSalesRecord.hsn_code).all()
-
-    return results
-
-
+# POST /gst/sales/sync and its GstSalesRecord model/table are gone. The
+# client stopped calling this in C2; the table itself was dropped from the
+# backend in this change (see the startup migration in main.py). All GST
+# reporting reads gst_sales_invoice(+items) exclusively now (A2/C1).
 # ============================================================
-# 4. GST Sales Records — Batch Sync (Idempotent)
-# ============================================================
-
-@router.post("/sales/sync")
-def sync_gst_sales_records(
-    payload: GstSalesSyncRequest,
-    db: Session = Depends(get_db),
-    current_shop = Depends(get_current_shop)
-):
-    """
-    Batch upsert GST sales records.
-    Idempotent: if record with same id exists, update it.
-    Conflict on (shop_id, invoice_number) is handled via id uniqueness.
-    """
-    synced = 0
-    skipped = 0
-
-    for rec in payload.records:
-        existing = db.query(GstSalesRecord).filter(
-            GstSalesRecord.id == rec.id
-        ).first()
-
-        if existing:
-            # Update only if incoming is newer (conflict resolution: prefer latest updated_at)
-            incoming_ts = rec.updated_at or utc_now()
-            if existing.updated_at and incoming_ts > existing.updated_at:
-                existing.invoice_number          = rec.invoice_number
-                existing.customer_type           = rec.customer_type
-                existing.customer_gstin          = rec.customer_gstin
-                existing.place_of_supply         = rec.place_of_supply
-                existing.supply_type             = rec.supply_type
-                existing.hsn_code                = rec.hsn_code
-                existing.product_name            = rec.product_name
-                existing.quantity                = rec.quantity
-                existing.unit                    = rec.unit
-                existing.taxable_value           = rec.taxable_value
-                existing.gst_rate                = rec.gst_rate
-                existing.cgst_amount             = rec.cgst_amount
-                existing.sgst_amount             = rec.sgst_amount
-                existing.igst_amount             = rec.igst_amount
-                existing.total_amount            = rec.total_amount
-                # ── GSTR-1 enrichment fields (v23) ──
-                existing.customer_name           = rec.customer_name
-                existing.business_name           = rec.business_name
-                existing.customer_phone          = rec.customer_phone
-                existing.customer_state          = rec.customer_state
-                existing.customer_state_code     = rec.customer_state_code
-                existing.reverse_charge          = rec.reverse_charge
-                existing.gstr_invoice_type       = rec.gstr_invoice_type
-                existing.ecommerce_gstin         = rec.ecommerce_gstin
-                existing.ecommerce_operator_name = rec.ecommerce_operator_name
-                # New ECO fields (Table 14/15)
-                existing.eco_nature_of_supply    = rec.eco_nature_of_supply
-                existing.eco_document_type       = rec.eco_document_type
-                existing.eco_supplier_gstin      = rec.eco_supplier_gstin
-                existing.eco_supplier_name       = rec.eco_supplier_name
-                existing.eco_recipient_gstin     = rec.eco_recipient_gstin
-                existing.eco_recipient_name      = rec.eco_recipient_name
-                existing.eco_role                = rec.eco_role
-
-                existing.cess_rate               = rec.cess_rate
-                existing.cess_amount             = rec.cess_amount
-                existing.uqc                     = rec.uqc
-                existing.hsn_description         = rec.hsn_description
-                existing.is_cancelled            = rec.is_cancelled
-                existing.sync_status             = "synced"
-                existing.updated_at              = utc_now()
-                synced += 1
-            else:
-                skipped += 1
-        else:
-            new_rec = GstSalesRecord(
-                id=rec.id,
-                shop_id=current_shop.id,
-                invoice_number=rec.invoice_number,
-                invoice_date=rec.invoice_date,
-                customer_type=rec.customer_type,
-                customer_gstin=rec.customer_gstin,
-                place_of_supply=rec.place_of_supply,
-                supply_type=rec.supply_type,
-                hsn_code=rec.hsn_code,
-                product_name=rec.product_name,
-                quantity=rec.quantity,
-                unit=rec.unit,
-                taxable_value=rec.taxable_value,
-                gst_rate=rec.gst_rate,
-                cgst_amount=rec.cgst_amount,
-                sgst_amount=rec.sgst_amount,
-                igst_amount=rec.igst_amount,
-                total_amount=rec.total_amount,
-                sync_status="synced",
-                device_id=rec.device_id or "",
-                created_at=rec.created_at or local_now(),
-                # ── GSTR-1 enrichment fields (v23) ──
-                customer_name=rec.customer_name,
-                business_name=rec.business_name,
-                customer_phone=rec.customer_phone,
-                customer_state=rec.customer_state,
-                customer_state_code=rec.customer_state_code,
-                reverse_charge=rec.reverse_charge,
-                gstr_invoice_type=rec.gstr_invoice_type,
-                ecommerce_gstin=rec.ecommerce_gstin,
-                ecommerce_operator_name=rec.ecommerce_operator_name,
-                # New ECO fields (Table 14/15)
-                eco_nature_of_supply=rec.eco_nature_of_supply,
-                eco_document_type=rec.eco_document_type,
-                eco_supplier_gstin=rec.eco_supplier_gstin,
-                eco_supplier_name=rec.eco_supplier_name,
-                eco_recipient_gstin=rec.eco_recipient_gstin,
-                eco_recipient_name=rec.eco_recipient_name,
-                eco_role=rec.eco_role,
-                cess_rate=rec.cess_rate,
-                cess_amount=rec.cess_amount,
-                uqc=rec.uqc,
-                hsn_description=rec.hsn_description,
-                is_cancelled=rec.is_cancelled,
-            )
-            db.add(new_rec)
-            synced += 1
-
-    db.commit()
-    return {"message": f"Synced {synced}, skipped {skipped}"}
 
 
 # ============================================================
@@ -386,11 +243,33 @@ def get_gstr1(
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid date format. Use YYYY-MM-DD")
 
-    records = db.query(GstSalesRecord).filter(
-        GstSalesRecord.shop_id == current_shop.id,
-        GstSalesRecord.invoice_date >= start,
-        GstSalesRecord.invoice_date <= end
-    ).all()
+    # Repointed onto gst_sales_invoice(+items) — Report 3 fix A2/C1. This is
+    # the same table the in-app GSTR-1 screen reads, and is_cancelled is now
+    # excluded here (the legacy `gst_sales_records` query this replaced had
+    # no such filter — see Report 2 F-4 / Report 3 D-1).
+    import types
+    records = []
+    for inv, item in get_active_invoice_line_items(db, current_shop.id, start, end):
+        records.append(types.SimpleNamespace(
+            customer_type=inv.invoice_type,
+            customer_gstin=inv.customer_gst,
+            invoice_number=inv.invoice_number or "",
+            invoice_date=datetime.fromtimestamp((inv.invoice_date or 0) / 1000) if inv.invoice_date else start,
+            place_of_supply=inv.customer_state_code or inv.customer_state or "",
+            supply_type=supply_type_of(item),
+            gst_rate=round(
+                (item.sales_cgst_percentage or 0)
+                + (item.sales_sgst_percentage or 0)
+                + (item.sales_igst_percentage or 0), 2
+            ),
+            taxable_value=item.taxable_amount or 0.0,
+            cgst_amount=item.cgst_amount or 0.0,
+            sgst_amount=item.sgst_amount or 0.0,
+            igst_amount=item.igst_amount or 0.0,
+            hsn_code=item.hsn_code or "",
+            unit=item.uqc,
+            quantity=item.quantity or 0.0,
+        ))
 
     # B2B: customer_type == "B2B"
     b2b_map = {}
@@ -745,73 +624,11 @@ def get_gstr2(
 # 8. GSTR-3B (Tax Liability Summary)
 # ============================================================
 
-@router.get("/reports/gstr3b", response_model=Gstr3BResponse)
-def get_gstr3b(
-    start_date: str = Query(..., description="YYYY-MM-DD"),
-    end_date: str = Query(..., description="YYYY-MM-DD"),
-    db: Session = Depends(get_db),
-    current_shop = Depends(get_current_shop)
-):
-    try:
-        start = datetime.strptime(start_date, "%Y-%m-%d")
-        end = datetime.strptime(end_date, "%Y-%m-%d").replace(hour=23, minute=59, second=59)
-    except ValueError:
-        raise HTTPException(status_code=400, detail="Invalid date format. Use YYYY-MM-DD")
-
-    sales = db.query(GstSalesRecord).filter(
-        GstSalesRecord.shop_id == current_shop.id,
-        GstSalesRecord.invoice_date >= start,
-        GstSalesRecord.invoice_date <= end
-    ).all()
-
-    purchases = db.query(GstPurchaseRecord).filter(
-        GstPurchaseRecord.shop_id == current_shop.id,
-        GstPurchaseRecord.invoice_date >= start,
-        GstPurchaseRecord.invoice_date <= end
-    ).all()
-
-    # 3.1(a) Normal rated outward supplies
-    normal_sales = [r for r in sales if r.gst_rate > 0]
-    zero_rated = [r for r in sales if r.gst_rate == 0]
-
-    def make_supply_detail(records) -> Gstr3BSupplyDetail:
-        return Gstr3BSupplyDetail(
-            total_taxable_value=round(sum(r.taxable_value for r in records), 2),
-            total_cgst=round(sum(r.cgst_amount for r in records), 2),
-            total_sgst=round(sum(r.sgst_amount for r in records), 2),
-            total_igst=round(sum(r.igst_amount for r in records), 2)
-        )
-
-    outward_normal = make_supply_detail(normal_sales)
-    outward_zero = make_supply_detail(zero_rated)
-    empty_detail = Gstr3BSupplyDetail(
-        total_taxable_value=0, total_cgst=0, total_sgst=0, total_igst=0
-    )
-
-    itc = Gstr3BSupplyDetail(
-        total_taxable_value=round(sum(r.taxable_value for r in purchases), 2),
-        total_cgst=round(sum(r.cgst_amount for r in purchases), 2),
-        total_sgst=round(sum(r.sgst_amount for r in purchases), 2),
-        total_igst=round(sum(r.igst_amount for r in purchases), 2)
-    )
-
-    # Net payable = outward tax - ITC
-    net_cgst = round(outward_normal.total_cgst - itc.total_cgst, 2)
-    net_sgst = round(outward_normal.total_sgst - itc.total_sgst, 2)
-    net_igst = round(outward_normal.total_igst - itc.total_igst, 2)
-
-    return Gstr3BResponse(
-        period_start=start_date,
-        period_end=end_date,
-        outward_taxable_supplies=outward_normal,
-        outward_zero_rated=outward_zero,
-        outward_nil_rated=empty_detail,
-        inward_nil_exempt=empty_detail,
-        itc_available=itc,
-        net_tax_payable_cgst=max(0, net_cgst),
-        net_tax_payable_sgst=max(0, net_sgst),
-        net_tax_payable_igst=max(0, net_igst)
-    )
+# GSTR-3B endpoint removed (not needed for this app). Its ITC side had also
+# been silently broken — it read from GstPurchaseRecord, a table the Android
+# client stopped populating after retiring the legacy sync flow, so ITC was
+# frozen/zero while net tax payable kept counting full output tax. GSTR-2
+# above is unaffected — it already reads live Purchase/PurchaseItem data.
 
 
 # ============================================================
@@ -831,32 +648,43 @@ def get_hsn_summary(
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid date format. Use YYYY-MM-DD")
 
-    results = db.query(
-        GstSalesRecord.hsn_code,
-        GstSalesRecord.unit,
-        func.sum(GstSalesRecord.quantity).label("total_quantity"),
-        func.sum(GstSalesRecord.taxable_value).label("taxable_value"),
-        func.sum(GstSalesRecord.cgst_amount).label("cgst_amount"),
-        func.sum(GstSalesRecord.sgst_amount).label("sgst_amount"),
-        func.sum(GstSalesRecord.igst_amount).label("igst_amount"),
-    ).filter(
-        GstSalesRecord.shop_id == current_shop.id,
-        GstSalesRecord.invoice_date >= start,
-        GstSalesRecord.invoice_date <= end
-    ).group_by(GstSalesRecord.hsn_code, GstSalesRecord.unit).all()
+    # Repointed onto gst_sales_invoice(+items), cancelled excluded —
+    # Report 3 fix A2/C1. (This route previously queried legacy
+    # gst_sales_records; it was also unreachable dead code until this
+    # change, shadowed by an earlier duplicate `/reports/hsn-summary`
+    # route that has now been removed — see Report 3 dead-code notes.)
+    hsn_agg: dict = {}
+    for _inv, item in get_active_invoice_line_items(db, current_shop.id, start, end):
+        key = (item.hsn_code or "", item.uqc)
+        if key not in hsn_agg:
+            hsn_agg[key] = {
+                "hsn_code": item.hsn_code or "",
+                "uom": (item.uqc or "NOS").upper(),
+                "total_quantity": 0.0,
+                "taxable_value": 0.0,
+                "cgst_amount": 0.0,
+                "sgst_amount": 0.0,
+                "igst_amount": 0.0,
+            }
+        agg = hsn_agg[key]
+        agg["total_quantity"] += item.quantity or 0.0
+        agg["taxable_value"] += item.taxable_amount or 0.0
+        agg["cgst_amount"] += item.cgst_amount or 0.0
+        agg["sgst_amount"] += item.sgst_amount or 0.0
+        agg["igst_amount"] += item.igst_amount or 0.0
 
     return [
         {
-            "hsn_code": r.hsn_code,
-            "uom": r.unit.upper() if r.unit else "NOS",
-            "total_quantity": round(r.total_quantity or 0, 3),
-            "taxable_value": round(r.taxable_value or 0, 2),
-            "cgst_amount": round(r.cgst_amount or 0, 2),
-            "sgst_amount": round(r.sgst_amount or 0, 2),
-            "igst_amount": round(r.igst_amount or 0, 2),
-            "total_tax": round((r.cgst_amount or 0) + (r.sgst_amount or 0) + (r.igst_amount or 0), 2)
+            "hsn_code": agg["hsn_code"],
+            "uom": agg["uom"],
+            "total_quantity": round(agg["total_quantity"], 3),
+            "taxable_value": round(agg["taxable_value"], 2),
+            "cgst_amount": round(agg["cgst_amount"], 2),
+            "sgst_amount": round(agg["sgst_amount"], 2),
+            "igst_amount": round(agg["igst_amount"], 2),
+            "total_tax": round(agg["cgst_amount"] + agg["sgst_amount"] + agg["igst_amount"], 2)
         }
-        for r in results
+        for agg in hsn_agg.values()
     ]
 
 
@@ -866,7 +694,7 @@ def get_hsn_summary(
 
 @router.post("/reports/email")
 async def email_gst_report(
-    report_type: str = Query(..., description="gstr1 / gstr2 / gstr3b / hsn"),
+    report_type: str = Query(..., description="gstr1 / gstr2 / hsn"),
     start_date: str = Query(...),
     end_date: str = Query(...),
     db: Session = Depends(get_db),

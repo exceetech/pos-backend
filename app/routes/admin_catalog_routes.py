@@ -7,34 +7,17 @@ STRICTLY on the global catalog (global_product_variants). They never
 read or mutate shop_products / inventory — that isolation is what keeps
 each shop's billing prices untouched.
 """
-import os
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Header
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from app.database import get_db
+from app.dependencies import require_admin
 from app.models.global_products import GlobalProduct
 from app.models.global_product_variant import GlobalProductVariant
 from app.utils import normalize_variant
-
-
-def require_admin(x_admin_token: Optional[str] = Header(None)):
-    """
-    Optional shared-secret guard for the catalog-admin endpoints.
-
-    - If the ADMIN_API_TOKEN env var is NOT set, the endpoints stay open
-      (consistent with the rest of the admin_routes surface).
-    - Once ADMIN_API_TOKEN is set, callers must send a matching
-      `X-Admin-Token` header or they're rejected.
-
-    This keeps the endpoints usable out of the box while letting you lock
-    them down simply by setting the env var.
-    """
-    expected = os.getenv("ADMIN_API_TOKEN")
-    if expected and x_admin_token != expected:
-        raise HTTPException(status_code=401, detail="Admin authorization required")
 
 
 router = APIRouter(

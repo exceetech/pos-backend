@@ -160,9 +160,19 @@ def _to_invoice(payload: CreateGstSalesInvoice, shop_id: int, db: Session) -> Gs
     )
 
     # Propagate cancellation to the analytics bills row
+    #
+    # Report 5 fix: was `current_shop.id`, but current_shop is not a
+    # parameter of this function — only `shop_id` is. Any cancelled-before-
+    # first-sync invoice hit this and raised NameError. Reached through
+    # sync_gst_sales_invoices' new-insert branch (the only path Android
+    # actually calls), where it was silently swallowed by the per-item
+    # try/except as a "failed" sync item — so it never crashed the request,
+    # but it also meant that invoice could never sync, ever: the bug is
+    # deterministic, so every retry failed the same way. That bill's GST
+    # invoice would be permanently missing from GSTR-1/GSTR-3B/HSN reports.
     if payload.is_cancelled:
         _cancel_matching_bill(
-            db, current_shop.id,
+            db, shop_id,
             payload.invoice_number, invoice.cancelled_at
         )
 

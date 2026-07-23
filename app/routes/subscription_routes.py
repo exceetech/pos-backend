@@ -5,7 +5,7 @@ import math
 from app.util.time_utils import utc_now, utc_to_epoch_ms
 
 from app.database import get_db
-from app.dependencies import get_current_shop
+from app.dependencies import get_current_shop, require_admin
 from app.models.subscription import Subscription
 
 from app.models.shop import Shop
@@ -47,7 +47,11 @@ def get_subscription(
 
 # ================= ADMIN =================
 
-@router.post("/admin/activate")
+# Security fix: this endpoint had no authentication at all — anyone who
+# could reach the API could grant any shop_id a free subscription. Gated
+# with the same require_admin shared-secret guard as admin_routes.py /
+# admin_catalog_routes.py (see app/dependencies.py for details).
+@router.post("/admin/activate", dependencies=[Depends(require_admin)])
 def admin_activate_subscription(
     shop_id: int,
     plan: str,

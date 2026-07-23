@@ -1,4 +1,7 @@
-from fastapi import Depends, HTTPException, Request
+import os
+from typing import Optional
+
+from fastapi import Depends, Header, HTTPException, Request
 from datetime import datetime
 from app.util.time_utils import utc_now
 from sqlalchemy.orm import Session
@@ -11,6 +14,30 @@ from app.models.subscription import Subscription
 from fastapi.security import OAuth2PasswordBearer
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/login")
+
+
+def require_admin(x_admin_token: Optional[str] = Header(None)) -> None:
+    """
+    Shared-secret guard for admin-tier endpoints (catalog review, shop
+    broadcast/archive/restore, subscription activation).
+
+    - If the ADMIN_API_TOKEN env var is NOT set, the endpoint stays open —
+      this keeps local/dev setups usable out of the box.
+    - Once ADMIN_API_TOKEN is set, callers must send a matching
+      `X-Admin-Token` header or they're rejected.
+
+    Originally defined only in admin_catalog_routes.py and applied to that
+    router. admin_routes.py (broadcast / archived-shops / restore-shop) and
+    POST /subscription/admin/activate had NO guard at all — not even the
+    optional env-var one — so anyone who could reach the API could
+    broadcast to every device, enumerate archived-shop PII by email,
+    swap a live shop out from under its owner via restore-shop, or grant
+    any shop_id a free subscription, all with zero authentication. Moved
+    here so every admin-tier router can share the same gate.
+    """
+    expected = os.getenv("ADMIN_API_TOKEN")
+    if expected and x_admin_token != expected:
+        raise HTTPException(status_code=401, detail="Admin authorization required")
 
 
 def get_current_shop(
@@ -36,6 +63,20 @@ def get_current_shop(
     payload = verify_token_full(token)
     shop_id        = int(payload["shop_id"])
     jwt_ws_version = payload.get("workspace_version")   # None for old tokens
+
+    # Report 5 fix (critical): tokens issued for the password-reset flow
+    # (/auth/verify-otp, /auth/generate-reset-token) carry scope="password_reset"
+    # and are meant to be usable for exactly one thing — POST /auth/reset-password.
+    # This function used to never check `scope` at all, so a reset token was a
+    # fully valid session token for every other authenticated endpoint in the
+    # app (bills, inventory, customers, everything) for its entire lifetime.
+    # A normal login token never sets `scope`, so anything with one set here
+    # is, by definition, not a login session token.
+    if payload.get("scope") is not None:
+        raise HTTPException(
+            status_code=401,
+            detail="This token cannot be used for this action",
+        )
 
     # ── 2. Shop exists ────────────────────────────────────────────────────────
     shop = db.query(Shop).filter(Shop.id == shop_id).first()
@@ -118,4 +159,11 @@ def get_current_shop_id(
     Skips device and subscription validation intentionally.
     """
     payload = verify_token_full(token)
+    # Report 5 fix: same scope guard as get_current_shop() above — a
+    # password-reset-scoped token must not authenticate anything else.
+    if payload.get("scope") is not None:
+        raise HTTPException(
+            status_code=401,
+            detail="This token cannot be used for this action",
+        )
     return int(payload["shop_id"])
