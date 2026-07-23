@@ -104,13 +104,18 @@ def sync_scrap(
             row = _to_model(r, current_shop.id)
             db.add(row)
             db.flush()
+            # Commit this row on its own (Sync deep-dive, Issue 12 — same fix
+            # as credit-notes/sync). A single shared commit-at-the-end
+            # transaction means a rollback() for a LATER bad row would wipe
+            # out every row that had already been flushed earlier in the
+            # same batch, even though they were valid.
+            db.commit()
             response.record_id_map[str(r.local_id)] = row.id
             response.success_count += 1
         except Exception as e:
             db.rollback()
             response.failed.append({"local_id": r.local_id, "reason": str(e)})
 
-    db.commit()
     response.message = f"{response.success_count}/{len(payload.records)} accepted"
     return response
 

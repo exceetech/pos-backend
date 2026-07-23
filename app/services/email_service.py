@@ -123,7 +123,10 @@ async def send_gst_report_email(shop, report_type: str, start_date: str, end_dat
     sync with cancellations. Purchase-side unaffected (gst_purchase_records
     was never part of the dual-write problem).
     """
+    from sqlalchemy import or_, and_
     from app.models.gst_purchase_record import GstPurchaseRecord
+    from app.models.credit_note import CreditNote
+    from app.models.bill import Bill
     from app.util.gst_sales_lookup import get_active_invoice_line_items
     from datetime import datetime
 
@@ -142,15 +145,56 @@ async def send_gst_report_email(shop, report_type: str, start_date: str, end_dat
 
     if report_type in ("gstr1", "hsn"):
         line_items = get_active_invoice_line_items(db, shop.id, start, end)
+        taxable = sum(item.taxable_amount or 0.0 for _inv, item in line_items)
+        cgst = sum(item.cgst_amount or 0.0 for _inv, item in line_items)
+        sgst = sum(item.sgst_amount or 0.0 for _inv, item in line_items)
+        igst = sum(item.igst_amount or 0.0 for _inv, item in line_items)
+
+        # Deep-dive fix, Issue 4: this report used to only sum active
+        # invoice line items, so any Credit Note (customer return — should
+        # REDUCE the outward-supply totals) or Debit Note (extra billed
+        # quantity — should INCREASE them) issued in the period was silently
+        # missing, unlike the in-app GSTR-1 export (Gstr1Generator.kt) which
+        # already nets these in via its CDNR/CDNUR sections. That made this
+        # emailed summary disagree with the accurate in-app report whenever
+        # any credit/debit notes existed. Netted in here the same way, and
+        # excluded for notes against a since-cancelled bill so a voided
+        # invoice's notes don't linger in the mailed totals either.
+        notes = db.query(CreditNote).outerjoin(
+            Bill, CreditNote.original_invoice_number == Bill.bill_number
+        ).filter(
+            CreditNote.shop_id == shop.id,
+            CreditNote.created_at >= start,
+            CreditNote.created_at <= end,
+            or_(
+                Bill.id == None,
+                and_(Bill.active == True, Bill.is_cancelled == False)
+            )
+        ).all()
+
+        credit_note_count = 0
+        debit_note_count = 0
+        for note in notes:
+            sign = -1 if note.note_type == "C" else 1
+            taxable += sign * float(note.taxable_value or 0.0)
+            cgst += sign * float(note.cgst_amount or 0.0)
+            sgst += sign * float(note.sgst_amount or 0.0)
+            igst += sign * float(note.igst_amount or 0.0)
+            if note.note_type == "C":
+                credit_note_count += 1
+            else:
+                debit_note_count += 1
+
         body = (
             f"GST Report: {subject_map.get(report_type)}\n"
             f"Shop: {shop.shop_name} | GSTIN: {shop.store_gstin or 'N/A'}\n"
             f"Period: {start_date} to {end_date}\n\n"
-            f"Total Records:  {len(line_items)}\n"
-            f"Taxable Value:  Rs.{sum(item.taxable_amount or 0.0 for _inv, item in line_items):.2f}\n"
-            f"CGST:           Rs.{sum(item.cgst_amount or 0.0 for _inv, item in line_items):.2f}\n"
-            f"SGST:           Rs.{sum(item.sgst_amount or 0.0 for _inv, item in line_items):.2f}\n"
-            f"IGST:           Rs.{sum(item.igst_amount or 0.0 for _inv, item in line_items):.2f}\n"
+            f"Total Records:  {len(line_items)}"
+            f" ({credit_note_count} credit note(s), {debit_note_count} debit note(s) applied)\n"
+            f"Taxable Value:  Rs.{taxable:.2f}\n"
+            f"CGST:           Rs.{cgst:.2f}\n"
+            f"SGST:           Rs.{sgst:.2f}\n"
+            f"IGST:           Rs.{igst:.2f}\n"
         )
 
     elif report_type == "gstr2":

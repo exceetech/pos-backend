@@ -104,12 +104,22 @@ def get_profit(
         product_map[pid]["profit"] += (s.total_revenue - s.total_cost)
 
     # ================= RETURNS =================
+    # Deep-dive fix, Issue 1: this query used to have no CreditNote.note_type
+    # filter at all, so it pulled BOTH Credit Notes ("C" — a customer return,
+    # revenue really did shrink) AND Debit Notes ("D" — extra units billed
+    # after the fact, revenue actually GREW). Both were subtracted here as if
+    # they were returns, and a Debit Note's revenue/cost was never added
+    # anywhere else (it never becomes a SaleItem row) — so every debit note
+    # only ever made profit look worse, never better. Scoped to note_type
+    # == "C" so only real returns land here; Debit Notes are handled in their
+    # own block below, added instead of subtracted.
     returns_query = db.query(CreditNoteItem).join(
         CreditNote, CreditNote.id == CreditNoteItem.note_id
         ).outerjoin(
         Bill, CreditNote.original_invoice_number == Bill.bill_number
     ).filter(
         CreditNote.shop_id == current_shop.id,
+        CreditNote.note_type == "C",
         or_(
             Bill.id == None,
             and_(
@@ -128,7 +138,7 @@ def get_profit(
             product = db.query(ShopProduct).filter(
                 ShopProduct.id == pid
             ).first()
-            
+
             if not product:
                 continue
 
@@ -156,9 +166,71 @@ def get_profit(
         product_map[pid]["revenue"] -= rev_returned
         product_map[pid]["cost"] -= cost_returned
         product_map[pid]["profit"] -= (rev_returned - cost_returned)
-        
+
         product_map[pid]["returned_qty"] += qty_returned
         product_map[pid]["returned_cost"] += cost_returned
+
+    # ================= DEBIT NOTES (extra quantity billed after the fact) =====
+    # Deep-dive fix, Issue 1: a Debit Note ("D") represents additional units
+    # that left the shop but were only billed for afterwards — real extra
+    # revenue and real extra cost, never recorded as a SaleItem. Added here
+    # (not subtracted) using the same total_amount/cost_price_used columns
+    # the returns block reads, mirroring the sign flip in
+    # CreditNoteRepository.createDebitNote / InventoryManager.reduceStock on
+    # the client, which already treats a debit note like an extra sale.
+    debits_query = db.query(CreditNoteItem).join(
+        CreditNote, CreditNote.id == CreditNoteItem.note_id
+        ).outerjoin(
+        Bill, CreditNote.original_invoice_number == Bill.bill_number
+    ).filter(
+        CreditNote.shop_id == current_shop.id,
+        CreditNote.note_type == "D",
+        or_(
+            Bill.id == None,
+            and_(
+                Bill.active == True,
+                Bill.is_cancelled == False
+            )
+        )
+    )
+
+    debits_query = apply_date_filter(debits_query, CreditNote.created_at)
+    debits = debits_query.all()
+
+    for d in debits:
+        pid = d.product_id
+        if pid not in product_map:
+            product = db.query(ShopProduct).filter(
+                ShopProduct.id == pid
+            ).first()
+
+            if not product:
+                continue
+
+            product_map[pid] = {
+                "product_id": pid,
+                "product_name": d.product_name,
+                "variant": d.variant,
+                "unit": product.unit if product.unit else "",
+                "qty": 0.0,
+                "revenue": 0.0,
+                "cost": 0.0,
+                "profit": 0.0,
+                "added": 0.0,
+                "sold": 0.0,
+                "lossAmount": 0.0,
+                "returned_qty": 0.0,
+                "returned_cost": 0.0
+            }
+
+        qty_debited = d.quantity_returned          # same column, reused for debited qty
+        rev_debited = float(d.total_amount)
+        cost_debited = float(d.cost_price_used)
+
+        product_map[pid]["qty"] += qty_debited
+        product_map[pid]["revenue"] += rev_debited
+        product_map[pid]["cost"] += cost_debited
+        product_map[pid]["profit"] += (rev_debited - cost_debited)
 
     # Audit Round 2, P-3 (fixed 2026-07-23): snapshot the FULL product map
     # (every product with real sales/returns this period) before the
@@ -251,7 +323,12 @@ def get_profit(
         #     which is the authoritative revenue/cost source; counting SALE
         #     rows here too would double-subtract the same units.
         restock_qty = sum(l.quantity for l in logs if l.type == "CANCEL_RESTOCK")
-        purchase_return_qty = sum(l.quantity for l in logs if l.type == "RETURN")
+        # Purchase-return-to-supplier logs now use the "PURCHASE_RETURN" type
+        # (see InventoryManager.LogType.PURCHASE_RETURN / inventory_routes.py
+        # sign fix); "RETURN" is kept in this filter for backward
+        # compatibility with rows synced before that change and is otherwise
+        # unused by any current write path.
+        purchase_return_qty = sum(l.quantity for l in logs if l.type in ("RETURN", "PURCHASE_RETURN"))
 
         added += restock_qty
 
@@ -278,7 +355,7 @@ def get_profit(
             post_add = sum(l.quantity for l in logs if l.type == "ADD" and l.created_at > anchor_time)
             post_restock = sum(l.quantity for l in logs if l.type == "CANCEL_RESTOCK" and l.created_at > anchor_time)
             post_loss_qty = sum(l.quantity for l in logs if l.type == "LOSS" and l.created_at > anchor_time)
-            post_return_qty = sum(l.quantity for l in logs if l.type == "RETURN" and l.created_at > anchor_time)
+            post_return_qty = sum(l.quantity for l in logs if l.type in ("RETURN", "PURCHASE_RETURN") and l.created_at > anchor_time)
 
             # "sold" above is the WHOLE period's sold quantity (correct for
             # revenue/cost/profit, which must never be truncated) — but

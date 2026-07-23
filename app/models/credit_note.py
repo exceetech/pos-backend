@@ -35,6 +35,10 @@ class CreditNote(Base):
 
     # Android-side primary key — lets sync be idempotent.
     local_id = Column(Integer, nullable=True, index=True)
+    # Stable per-install id — combined with local_id to tell apart two
+    # devices on the same shop that independently numbered a credit/debit
+    # note the same way (Issue 10).
+    client_device_id = Column(String, nullable=True)
 
     # ── Note identity ────────────────────────────────────────────────────
     # Auto-generated on the client: "CN-00001", "CN-00002", …

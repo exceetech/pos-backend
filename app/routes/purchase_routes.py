@@ -97,74 +97,89 @@ def sync_purchases(
 ):
     purchase_id_map = {}
     success_count = 0
+    # Issue 9: purchases that fail validation are recorded here and skipped,
+    # instead of aborting the whole batch. Previously a single bad purchase
+    # anywhere in the list — even a brand-new one — made the endpoint reject
+    # the entire request, including every valid purchase before it, and
+    # since the app resends the same unsynced batch on every retry, that one
+    # bad row could permanently block all purchases behind it from ever
+    # reaching the server.
+    failed = []
 
-    try:
-        for p in payload.purchases:
+    for p in payload.purchases:
+        try:
             # Backend validation
             if not p.place_of_supply_code:
-                return JSONResponse(status_code=400, content={"message": "place_of_supply_code is required"})
+                raise ValueError("place_of_supply_code is required")
             if p.reverse_charge not in ["Y", "N"]:
-                return JSONResponse(status_code=400, content={"message": "reverse_charge must be Y or N"})
+                raise ValueError("reverse_charge must be Y or N")
             if not p.invoice_type:
-                return JSONResponse(status_code=400, content={"message": "invoice_type is required"})
+                raise ValueError("invoice_type is required")
             if p.supply_type not in ["intrastate", "interstate"]:
-                return JSONResponse(status_code=400, content={"message": "supply_type must be intrastate or interstate"})
+                raise ValueError("supply_type must be intrastate or interstate")
             if p.cess_paid < 0:
-                return JSONResponse(status_code=400, content={"message": "cess_paid must be >= 0"})
+                raise ValueError("cess_paid must be >= 0")
             if not p.eligibility_for_itc:
-                return JSONResponse(status_code=400, content={"message": "eligibility_for_itc is required"})
+                raise ValueError("eligibility_for_itc is required")
             if (p.availed_itc_integrated_tax < 0 or p.availed_itc_central_tax < 0 or
                     p.availed_itc_state_tax < 0 or p.availed_itc_cess < 0):
-                return JSONResponse(status_code=400, content={"message": "availed ITC fields must be >= 0"})
+                raise ValueError("availed ITC fields must be >= 0")
 
             if p.availed_itc_integrated_tax > p.igst_amount:
-                return JSONResponse(status_code=400, content={"message": "availed_itc_integrated_tax cannot exceed igst_amount"})
+                raise ValueError("availed_itc_integrated_tax cannot exceed igst_amount")
             if p.availed_itc_central_tax > p.cgst_amount:
-                return JSONResponse(status_code=400, content={"message": "availed_itc_central_tax cannot exceed cgst_amount"})
+                raise ValueError("availed_itc_central_tax cannot exceed cgst_amount")
             if p.availed_itc_state_tax > p.sgst_amount:
-                return JSONResponse(status_code=400, content={"message": "availed_itc_state_tax cannot exceed sgst_amount"})
+                raise ValueError("availed_itc_state_tax cannot exceed sgst_amount")
             if p.availed_itc_cess > p.cess_paid:
-                return JSONResponse(status_code=400, content={"message": "availed_itc_cess cannot exceed cess_paid"})
+                raise ValueError("availed_itc_cess cannot exceed cess_paid")
 
             if p.eligibility_for_itc in ["Ineligible", "None"]:
                 if (p.availed_itc_integrated_tax != 0 or p.availed_itc_central_tax != 0 or
                         p.availed_itc_state_tax != 0 or p.availed_itc_cess != 0):
-                    return JSONResponse(status_code=400, content={"message": "availed ITC fields must be 0 when ineligible/None"})
+                    raise ValueError("availed ITC fields must be 0 when ineligible/None")
 
             # Item-level validation
             for item in p.items:
                 if item.cess_percentage < 0:
-                    return JSONResponse(status_code=400, content={"message": "item cess_percentage must be >= 0"})
+                    raise ValueError("item cess_percentage must be >= 0")
                 if item.cess_amount < 0:
-                    return JSONResponse(status_code=400, content={"message": "item cess_amount must be >= 0"})
+                    raise ValueError("item cess_amount must be >= 0")
                 if not item.eligibility_for_itc:
-                    return JSONResponse(status_code=400, content={"message": "item eligibility_for_itc is required"})
+                    raise ValueError("item eligibility_for_itc is required")
                 if (item.availed_itc_igst < 0 or item.availed_itc_cgst < 0 or
                         item.availed_itc_sgst < 0 or item.availed_itc_cess < 0):
-                    return JSONResponse(status_code=400, content={"message": "item availed ITC fields must be >= 0"})
+                    raise ValueError("item availed ITC fields must be >= 0")
 
                 if item.availed_itc_igst > item.purchase_igst_amount:
-                    return JSONResponse(status_code=400, content={"message": "item availed_itc_igst cannot exceed purchase_igst_amount"})
+                    raise ValueError("item availed_itc_igst cannot exceed purchase_igst_amount")
                 if item.availed_itc_cgst > item.purchase_cgst_amount:
-                    return JSONResponse(status_code=400, content={"message": "item availed_itc_cgst cannot exceed purchase_cgst_amount"})
+                    raise ValueError("item availed_itc_cgst cannot exceed purchase_cgst_amount")
                 if item.availed_itc_sgst > item.purchase_sgst_amount:
-                    return JSONResponse(status_code=400, content={"message": "item availed_itc_sgst cannot exceed purchase_sgst_amount"})
+                    raise ValueError("item availed_itc_sgst cannot exceed purchase_sgst_amount")
                 if item.availed_itc_cess > item.cess_amount:
-                    return JSONResponse(status_code=400, content={"message": "item availed_itc_cess cannot exceed cess_amount"})
+                    raise ValueError("item availed_itc_cess cannot exceed cess_amount")
 
                 if item.eligibility_for_itc in ["Ineligible", "None"]:
                     if (item.availed_itc_igst != 0 or item.availed_itc_cgst != 0 or
                             item.availed_itc_sgst != 0 or item.availed_itc_cess != 0):
-                        return JSONResponse(status_code=400, content={"message": "item availed ITC fields must be 0 when ineligible/None"})
+                        raise ValueError("item availed ITC fields must be 0 when ineligible/None")
 
                 if item.hsn_code and not item.official_uqc:
-                    return JSONResponse(status_code=400, content={"message": "item official_uqc is required when hsn_code is present"})
+                    raise ValueError("item official_uqc is required when hsn_code is present")
 
-            # Check if purchase already exists for this shop by local_id
-            existing = db.query(Purchase).filter(
+            # Issue 10: match on (shop, device, local_id) when the client
+            # sends a device id, so two devices on the same shop that each
+            # number their own Nth purchase the same way don't collide and
+            # silently overwrite each other. Falls back to (shop, local_id)
+            # for older clients that don't yet send client_device_id.
+            existing_q = db.query(Purchase).filter(
                 Purchase.shop_id == current_shop.id,
                 Purchase.local_id == p.local_id
-            ).first()
+            )
+            if p.client_device_id:
+                existing_q = existing_q.filter(Purchase.client_device_id == p.client_device_id)
+            existing = existing_q.first()
 
             if existing is not None:
                 purchase = existing
@@ -206,6 +221,7 @@ def sync_purchases(
                 purchase = Purchase(
                     shop_id=current_shop.id,
                     local_id=p.local_id,
+                    client_device_id=p.client_device_id,
                     invoice_number=p.invoice_number,
                     supplier_gstin=p.supplier_gstin,
                     supplier_name=p.supplier_name,
@@ -356,27 +372,35 @@ def sync_purchases(
                 # two copies disagreed on unit cost / gst_percent, corrupting COGS.
                 # See purchase_batch_routes.py for the authoritative upsert.
 
+            # Commit this purchase on its own instead of batching every
+            # purchase into one transaction committed at the very end.
+            # A plain rollback() undoes the WHOLE transaction, not just the
+            # failed statement — so if a later purchase in the batch failed,
+            # a shared transaction would silently wipe out every purchase
+            # that had already succeeded earlier in the same request.
+            # Committing per purchase makes each one durable immediately, so
+            # a later failure can only ever cost that one failed purchase.
+            db.commit()
             purchase_id_map[str(p.local_id)] = purchase.id
             success_count += 1
 
-        db.commit()
-
-    except IntegrityError as e:
-        db.rollback()
-        return JSONResponse(
-            status_code=400,
-            content={"message": f"Database integrity error: {str(e.orig)}"}
-        )
-    except Exception as e:
-        db.rollback()
-        return JSONResponse(
-            status_code=500,
-            content={"message": f"Server error during purchase sync: {str(e)}"}
-        )
+        except IntegrityError as e:
+            db.rollback()
+            print(f"[purchases/sync] local_id={p.local_id} failed: integrity error: {e.orig}")
+            failed.append({"local_id": p.local_id, "reason": f"Database integrity error: {str(e.orig)}"})
+        except Exception as e:
+            # A flush/commit failure leaves the session needing a rollback
+            # before it can be used again — otherwise every purchase later
+            # in the same batch, even perfectly valid ones, would also fail.
+            db.rollback()
+            print(f"[purchases/sync] local_id={p.local_id} failed: {e}")
+            failed.append({"local_id": p.local_id, "reason": str(e)})
 
     return PurchaseSyncResponse(
         success_count=success_count,
-        purchase_id_map=purchase_id_map
+        purchase_id_map=purchase_id_map,
+        failed=failed,
+        message=f"{success_count}/{len(payload.purchases)} accepted"
     )
 
 

@@ -38,6 +38,10 @@ class Purchase(Base):
     credit_account_id = Column(Integer, ForeignKey("credit_accounts.id"), nullable=True)
 
     local_id = Column(Integer, nullable=True, index=True)
+    # Stable per-install id — combined with local_id to tell apart two
+    # devices on the same shop that independently numbered a purchase the
+    # same way (Issue 10).
+    client_device_id = Column(String, nullable=True)
     place_of_supply_code = Column(String, nullable=False, default="")
     reverse_charge = Column(String, nullable=False, default="N")
     invoice_type = Column(String, nullable=False, default="Regular")

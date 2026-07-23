@@ -57,6 +57,11 @@ class CreditNoteDto(BaseModel):
     response can return a {local_id → server_id} map.
     """
     local_id: int
+    # Stable per-install id (Issue 10). Without this, two devices on the
+    # same shop that each independently number their Nth credit note the
+    # same way collide on (shop_id, local_id) and the second push silently
+    # overwrites the first device's note.
+    client_device_id: Optional[str] = None
 
     note_number:            str
     note_date:              int               # epoch millis

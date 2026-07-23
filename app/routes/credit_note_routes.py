@@ -93,6 +93,7 @@ def _build_note(dto: CreditNoteDto, shop_id: int) -> CreditNote:
     note = CreditNote(
         shop_id                 = shop_id,
         local_id                = dto.local_id,
+        client_device_id        = dto.client_device_id,
         note_number             = dto.note_number,
         note_date               = dto.note_date,
         note_type               = dto.note_type,
@@ -192,19 +193,22 @@ def sync_credit_notes(
                 if dto.taxable_value <= 0:
                     raise ValueError("Debit Note taxable_value must be > 0.")
 
-            existing = (
-                db.query(CreditNote)
-                  .options(selectinload(CreditNote.items))
-                  .filter(
-                      CreditNote.shop_id  == current_shop.id,
-                      CreditNote.local_id == dto.local_id,
-                  )
-                  .first()
+            # Issue 10: match on (shop, device, local_id) when the client sends
+            # a device id, so two devices on the same shop that each number
+            # their own Nth credit note the same way don't collide and
+            # silently overwrite each other. Old clients that don't yet send
+            # client_device_id fall back to the previous (shop, local_id)
+            # match so they aren't broken by this change.
+            query = db.query(CreditNote).options(selectinload(CreditNote.items)).filter(
+                CreditNote.shop_id == current_shop.id,
+                CreditNote.local_id == dto.local_id,
             )
+            if dto.client_device_id:
+                query = query.filter(CreditNote.client_device_id == dto.client_device_id)
+            existing = query.first()
 
             if existing is not None:
                 _update_existing(existing, dto)
-                db.flush()
                 server_id = existing.id
             else:
                 note = _build_note(dto, current_shop.id)
@@ -212,14 +216,25 @@ def sync_credit_notes(
                 db.flush()
                 server_id = note.id
 
+            # Issue 11: commit each note on its own instead of batching every
+            # note into one transaction committed at the very end. A plain
+            # rollback() undoes the WHOLE transaction, not just the failed
+            # statement — so if a later note in the batch failed, a shared
+            # transaction would silently wipe out every note that had
+            # already succeeded earlier in the same request. Committing per
+            # note makes each one durable immediately, so a later failure
+            # can only ever cost that one failed note.
+            db.commit()
             response.note_id_map[str(dto.local_id)] = server_id
             response.success_count += 1
 
         except Exception as exc:
+            # A flush/commit failure leaves the session needing a rollback
+            # before it can be used again — otherwise every note later in
+            # the same batch, even perfectly valid ones, would also fail.
+            db.rollback()
             print(f"[credit-notes/sync] local_id={dto.local_id} failed: {exc}")
             response.failed.append({"local_id": dto.local_id, "reason": str(exc)})
-
-    db.commit()
     response.message = f"{response.success_count}/{len(payload.credit_notes)} accepted"
     return response
 

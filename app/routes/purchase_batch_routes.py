@@ -83,12 +83,23 @@ def sync_purchase_batches(
                 db.add(row)
 
             db.flush()
+            # Commit this batch row on its own (Sync deep-dive, Issue 12).
+            # This endpoint is the authoritative source for FIFO/weighted-
+            # average cost data, so getting this wrong corrupts COGS. Two
+            # bugs existed here together: (1) one shared commit-at-the-end
+            # transaction meant a failure on a LATER row would silently
+            # discard every row already flushed earlier in the batch, and
+            # (2) there was no rollback() on failure at all, so the broken
+            # session would make every row after the first failure fail too,
+            # and the final commit() below would then raise uncaught,
+            # 500-ing the whole request and losing the entire batch anyway.
+            db.commit()
             response.batch_id_map[str(b.local_id)] = row.id
             response.success_count += 1
         except Exception as e:
+            db.rollback()
             print(f"[purchase-batches/sync] local_id={b.local_id} failed: {e}")
 
-    db.commit()
     response.message = f"{response.success_count}/{len(payload.batches)} accepted"
     return response
 

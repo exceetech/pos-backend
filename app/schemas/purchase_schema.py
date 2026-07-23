@@ -56,6 +56,11 @@ class PurchaseItemDto(BaseModel):
 
 class PurchaseDto(BaseModel):
     local_id: int
+    # Stable per-install id (Issue 10). Combined with local_id this lets the
+    # server tell apart two different devices that independently numbered a
+    # purchase "5" for the same shop, instead of treating the second push as
+    # an update to the first device's purchase and silently overwriting it.
+    client_device_id: Optional[str] = None
 
     invoice_number: str
     supplier_gstin: Optional[str] = None
@@ -102,4 +107,8 @@ class PurchaseSyncResponse(BaseModel):
     success_count: int
     purchase_id_map: dict
     item_id_map: dict = {}
+    # Per-row failures (Issue 9). A purchase that fails validation is
+    # reported here and skipped — it no longer aborts the whole batch and
+    # discards purchases that were already valid.
+    failed: List[dict] = []
     message: Optional[str] = None
