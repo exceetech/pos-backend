@@ -11,7 +11,7 @@ from app.schemas.shop_schema import ShopRegister, ShopActivate, ForgotPasswordRe
 from app.security import verify_password, hash_password, create_access_token
 from app.security import create_access_token
 from app.services.email_service import send_registration_emails
-from app.dependencies import get_current_shop
+from app.dependencies import get_current_shop, require_admin
 import secrets
 import hashlib
 from datetime import datetime, timedelta
@@ -309,16 +309,46 @@ def verify_otp(email: str, otp: str, db: Session = Depends(get_db)):
     }
 
 
-# ================= GENERATE RESET TOKEN — REMOVED (Report 5) =================
-# This endpoint used to accept just an `email` query parameter — no OTP, no
-# password, nothing — and hand back a valid password-reset token for that
-# shop. Combined with the missing `scope` check that get_current_shop() used
-# to have (also fixed in this pass), that token worked as a full session
-# credential everywhere, not just for /auth/reset-password: a full account
-# takeover for anyone who knew a registered email address. Confirmed unused
-# by the Android app (no caller anywhere in the client) before removing —
-# the only legitimate path to a reset token is /auth/verify-otp, which
-# actually requires the emailed OTP.
+# ================= GENERATE RESET TOKEN (ADMIN) =================
+# Re-gated behind require_admin (ADMIN_API_TOKEN / X-Admin-Token — same
+# shared-secret guard used by admin_catalog_routes.py, admin_routes.py, and
+# POST /subscription/admin/activate).
+#
+# Originally this endpoint accepted just an `email` query parameter — no
+# OTP, no password, nothing — and handed back a valid password-reset token
+# for that shop. Combined with a since-fixed gap in get_current_shop()
+# (it now rejects any token carrying a `scope` claim for non-reset
+# endpoints), an unguarded reset token doubled as a full session credential
+# everywhere — a complete account-takeover path for anyone who knew a
+# registered email address. It is still NOT meant for the Android app to
+# call; the app's own reset path is /auth/verify-otp, which requires the
+# emailed OTP. This is strictly an admin/support tool now, for cases where
+# support needs to issue a reset token without the shop having mailbox
+# access (e.g. verifying identity by other means). Do not expose this to
+# the client app or call it without ADMIN_API_TOKEN set in production.
+@router.post("/generate-reset-token", dependencies=[Depends(require_admin)])
+def generate_reset_token(email: str, db: Session = Depends(get_db)):
+
+    email = email.strip().lower()
+
+    shop_row = db.query(Shop).filter(Shop.email == email).first()
+
+    if not shop_row:
+        raise HTTPException(status_code=404, detail="Shop not found")
+
+    reset_token = create_access_token(
+        data={
+            "shop_id": shop_row.id,
+            "scope": "password_reset"
+        },
+        expires_delta=timedelta(minutes=10)
+    )
+
+    return {
+        "otp_verified": True,
+        "access_token": reset_token,
+        "token_type": "bearer"
+    }
 
 
 # ================= INVALIDATE TOKEN =================
@@ -359,13 +389,25 @@ def reset_password(
 
     return {"message": "Password reset successful"}
 
-# ================= RESET DEVICE (ADMIN) — REMOVED (Report 5) =================
-# This endpoint took a shop_id path parameter and cleared that shop's device
-# lock with NO authentication check of any kind — anyone who could reach the
-# API could unbind any shop's device, defeating the one-device-per-account
-# protection for the entire app. It also had no null-check (an invalid
-# shop_id would 500, not 404). Confirmed unused by the Android app. Device
-# lock is currently permanent-until-support-intervenes by design; if a real
-# "admin resets a customer's device" tool is needed later, it needs a proper
-# admin-auth mechanism first — this codebase doesn't have one yet (see the
-# same gap in admin_routes.py's other endpoints, flagged separately).
+# ================= RESET DEVICE (ADMIN) =================
+# Restored at the user's explicit request, re-gated behind require_admin
+# (ADMIN_API_TOKEN / X-Admin-Token — same shared-secret guard used
+# elsewhere in this file and by admin_catalog_routes.py / admin_routes.py).
+#
+# Originally this endpoint took a shop_id path parameter and cleared that
+# shop's device lock with NO authentication check of any kind — anyone who
+# could reach the API could unbind any shop's device, defeating the
+# one-device-per-account protection for the entire app. It also had no
+# null-check (an invalid shop_id would 500, not 404) — fixed here too.
+@router.post("/reset-device/{shop_id}", dependencies=[Depends(require_admin)])
+def reset_device(shop_id: int, db: Session = Depends(get_db)):
+
+    shop_row = db.query(Shop).filter(Shop.id == shop_id).first()
+
+    if not shop_row:
+        raise HTTPException(status_code=404, detail="Shop not found")
+
+    shop_row.device_id = None
+    db.commit()
+
+    return {"message": "Device reset"}
