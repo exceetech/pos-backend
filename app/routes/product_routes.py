@@ -211,13 +211,31 @@ def add_to_shop(
         db.commit()
         db.refresh(existing)
 
+        # Avg-cost audit, Fix 3: same row-lock reasoning as
+        # inventory_routes.py's sync_inventory_logs() — this is a
+        # read-then-conditionally-overwrite-then-commit sequence on the
+        # same Inventory row, so it gets the same .with_for_update() guard
+        # for consistency, even though a concurrent product-restore edit
+        # racing itself is a much rarer scenario than concurrent device
+        # sync.
         inventory = db.query(Inventory).filter(
             Inventory.product_id == existing.id,
             Inventory.shop_id == current_shop.id
-        ).first()
+        ).with_for_update().first()
 
         # 🔥 VALIDATION
-        if data.track_inventory and data.initial_stock and data.cost_price is None:
+        # Avg-cost audit, Fix 5: this used to only catch cost_price being
+        # completely absent (None) — but the overwrite below uses
+        # `data.cost_price or 0.0`, so an EXPLICIT cost_price of 0
+        # (which is what AddProductRequest's schema even defaults to)
+        # sailed straight past this check and silently set a POSITIVE
+        # stock count's average cost to zero — free inventory, and every
+        # future sale of it would show 100% profit with no cost basis at
+        # all. Now rejects any positive initial_stock paired with a
+        # missing OR non-positive cost_price, matching the same "cost
+        # price must be a real positive number to receive stock" rule
+        # InventoryManager.addStock already enforces on the Android side.
+        if data.track_inventory and data.initial_stock and data.initial_stock > 0 and not (data.cost_price and data.cost_price > 0):
             raise HTTPException(400, "Cost price required")
 
         # ================= INVENTORY LOGIC =================
@@ -254,6 +272,19 @@ def add_to_shop(
     # =========================================================
     # NEW PRODUCT
     # =========================================================
+    # Avg-cost audit, Fix 5: same gap as the restore path above — a brand
+    # new product with real opening stock but a missing/zero cost price
+    # would otherwise get created with average_cost=0.0, i.e. free
+    # inventory that overstates profit on every future sale. Validated
+    # BEFORE the product row is created/committed below, so a rejected
+    # request never leaves behind an orphan ShopProduct with
+    # track_inventory=true and no matching Inventory row. Checked here
+    # rather than only relying on client-side UI validation, so a bad
+    # request can never create a corrupted inventory row regardless of
+    # which client (or client version) sent it.
+    if data.track_inventory and data.initial_stock and data.initial_stock > 0 and not (data.cost_price and data.cost_price > 0):
+        raise HTTPException(400, "Cost price required")
+
     new_product = ShopProduct(
         shop_id=current_shop.id,
         global_product_id=global_product.id,

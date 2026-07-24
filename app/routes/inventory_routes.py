@@ -96,10 +96,33 @@ def sync_inventory_logs(
             # =================================================
             # 🔥 GET / CREATE INVENTORY
             # =================================================
+            # Avg-cost audit, Fix 3: .with_for_update() takes a row-level
+            # lock (Postgres SELECT ... FOR UPDATE) that's held until this
+            # log's db.commit()/db.rollback() a few lines below. Without it,
+            # two overlapping sync requests for the SAME product (two
+            # devices syncing at once, or a client retry firing while the
+            # first attempt is still in flight) could both read the same
+            # "old" average_cost/current_stock, both compute their own
+            # "new" values from that same stale snapshot, and the second
+            # write would silently clobber the first — losing one of the
+            # two updates. The lock forces the second request to wait for
+            # the first to finish (commit or rollback) before it can even
+            # read the row, so it always sees the first update's result and
+            # can never blindly overwrite it. Mirrors the equivalent fix
+            # already applied on the Android side (InventoryManager's
+            # db.withTransaction wrapping every read-modify-write).
+            #
+            # No lock is (or can be) taken on the "row doesn't exist yet"
+            # branch below — inventory(product_id, shop_id) is the table's
+            # composite primary key, so a genuine concurrent double-insert
+            # is instead caught by a database IntegrityError, which the
+            # existing try/except around this whole loop already rolls
+            # back and skips (that log stays unsynced and is retried on
+            # the client's next sync pass).
             inventory = db.query(Inventory).filter(
                 Inventory.product_id == log.product_id,
                 Inventory.shop_id == current_shop.id
-            ).first()
+            ).with_for_update().first()
 
             if not inventory:
                 inventory = Inventory(
@@ -125,7 +148,20 @@ def sync_inventory_logs(
 
                 new_stock = old_stock + log.quantity
 
-                if log.price <= 0:
+                # Avg-cost audit, Fix 2: the client already computed the
+                # correct final average cost for this event (using the
+                # app's one weighted-average formula, applied once, on the
+                # phone). Trust that value directly instead of re-deriving
+                # it here with a second, independently-maintained copy of
+                # the same formula — the two used to be able to silently
+                # drift apart from each other. Only fall back to computing
+                # it ourselves for older app builds that don't send this
+                # field yet, or if the value we got is nonsensical
+                # (negative / not a real number).
+                client_avg = log.resulting_average_cost
+                if client_avg is not None and client_avg >= 0 and client_avg == client_avg and client_avg not in (float("inf"), float("-inf")):
+                    new_avg = client_avg
+                elif log.price <= 0:
                     new_avg = old_avg
                 elif old_stock <= 0:
                     new_avg = log.price
@@ -164,7 +200,14 @@ def sync_inventory_logs(
                 # absolute-checkpoint semantics already used correctly in
                 # profit_routes.py's own ADJUST handling.
                 inventory.current_stock = log.quantity
-                if log.price > 0:
+                # Avg-cost audit, Fix 2: same preference as the additive
+                # branch above — trust the client's already-computed final
+                # value when present, falling back to log.price (the older
+                # behavior) for pre-Fix-2 app builds.
+                client_avg = log.resulting_average_cost
+                if client_avg is not None and client_avg >= 0 and client_avg == client_avg and client_avg not in (float("inf"), float("-inf")):
+                    inventory.average_cost = client_avg
+                elif log.price > 0:
                     inventory.average_cost = log.price
 
             # Commit this log on its own instead of batching every log
