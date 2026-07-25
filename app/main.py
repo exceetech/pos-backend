@@ -1023,6 +1023,63 @@ except Exception as e:  # pragma: no cover
     print(f"[startup] stale-bills cleanup skipped: {e}")
 
 
+# ──────────────────────────────────────────────────────────────────────
+# Moving-average redesign, Fix 2: `inventory_log.resulting_average_cost`
+# was added to the SQLAlchemy model (and to the Room entity, via
+# MIGRATION_58_59) but — same class of gap as every other in-place
+# migration in this file — create_all() only creates missing TABLES,
+# never ALTERs an existing one. Any already-deployed database was
+# missing this column until this ALTER runs once. Idempotent: skips
+# straight through once the column exists.
+# ──────────────────────────────────────────────────────────────────────
+def _add_inventory_log_resulting_avg_cost_column() -> None:
+    from sqlalchemy import inspect, text
+
+    with engine.connect() as conn:
+        insp = inspect(engine)
+        if "inventory_log" not in insp.get_table_names():
+            return
+        cols = {c["name"] for c in insp.get_columns("inventory_log")}
+        _add_column_if_missing(
+            conn, "inventory_log", cols, "resulting_average_cost",
+            "resulting_average_cost DOUBLE PRECISION NOT NULL DEFAULT 0.0"
+        )
+        conn.commit()
+
+try:
+    _add_inventory_log_resulting_avg_cost_column()
+except Exception as e:  # pragma: no cover
+    print(f"[startup] inventory_log.resulting_average_cost migration skipped: {e}")
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Moving-average redesign, Phase 2: `purchase_returns.inventory_valuation
+# _variance` — same gap. Reported live: GET /purchase-return/{shop_id}
+# was throwing psycopg2.errors.UndefinedColumn on any already-deployed
+# database, because the SQLAlchemy model gained this column but nothing
+# ever ran the matching ALTER TABLE against the real Postgres schema.
+# Idempotent, safe to run on every startup.
+# ──────────────────────────────────────────────────────────────────────
+def _add_purchase_return_variance_column() -> None:
+    from sqlalchemy import inspect, text
+
+    with engine.connect() as conn:
+        insp = inspect(engine)
+        if "purchase_returns" not in insp.get_table_names():
+            return
+        cols = {c["name"] for c in insp.get_columns("purchase_returns")}
+        _add_column_if_missing(
+            conn, "purchase_returns", cols, "inventory_valuation_variance",
+            "inventory_valuation_variance DOUBLE PRECISION NOT NULL DEFAULT 0.0"
+        )
+        conn.commit()
+
+try:
+    _add_purchase_return_variance_column()
+except Exception as e:  # pragma: no cover
+    print(f"[startup] purchase_returns.inventory_valuation_variance migration skipped: {e}")
+
+
 # Routers
 app.include_router(auth_routes.router)
 app.include_router(product_routes.router)

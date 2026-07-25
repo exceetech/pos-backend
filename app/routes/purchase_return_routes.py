@@ -170,6 +170,11 @@ def _to_model(payload, shop_id: int) -> PurchaseReturn:
         availed_itc_cess         = getattr(payload, "availed_itc_cess", 0.0),
         invoice_type            = getattr(payload, "invoice_type", "Regular"),
         place_of_supply_code    = getattr(payload, "place_of_supply_code", ""),
+        # Moving-average redesign, Phase 2: trust the client's computed
+        # gain/loss as-is (same "phone computes, server stores" pattern
+        # as Fix 2's resulting_average_cost). Old clients omit the
+        # field entirely, which defaults to 0.0 here.
+        inventory_valuation_variance = getattr(payload, "inventory_valuation_variance", None) or 0.0,
     )
 
 

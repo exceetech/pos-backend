@@ -81,6 +81,10 @@ class PurchaseReturnDto(BaseModel):
     invoice_type: str = "Regular"
     place_of_supply_code: str = ""
 
+    # Moving-average redesign, Phase 2. Optional so old clients that
+    # haven't updated continue to sync fine (server default is 0.0).
+    inventory_valuation_variance: Optional[float] = 0.0
+
 
 class PurchaseReturnCreateRequest(PurchaseReturnDto):
     """Single-row create — same fields as the DTO. Wrapped here so
@@ -152,6 +156,7 @@ class PurchaseReturnOut(BaseModel):
     availed_itc_cess:         Optional[float] = None
     invoice_type:            Optional[str]  = None
     place_of_supply_code:    Optional[str]  = None
+    inventory_valuation_variance: Optional[float] = None
 
 
 class PurchaseReturnSyncResponse(BaseModel):

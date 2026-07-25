@@ -97,3 +97,15 @@ class PurchaseReturn(Base):
     availed_itc_cess = Column(Float, nullable=False, default=0.0)
     invoice_type = Column(String, nullable=False, default="Regular")
     place_of_supply_code = Column(String, nullable=False, default="")
+
+    # ── Moving-average redesign, Phase 2 ──────────────────────────────
+    # Only meaningful for a Debit Note (note_type == "D"). A purchase
+    # return removes inventory VALUE at the current (frozen) average
+    # cost, same as a sale — but the supplier only refunds what was
+    # originally invoiced for those units. This is that gap: (quantity
+    # x average cost at the moment of return) - (quantity x the
+    # original invoice's unit cost). Positive = loss, negative = gain.
+    # Computed once on the phone and stored as-is; the server never
+    # recomputes it. Zero for Credit Notes and for any row that
+    # predates this column.
+    inventory_valuation_variance = Column(Float, nullable=False, default=0.0)

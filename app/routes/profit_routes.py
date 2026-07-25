@@ -12,6 +12,7 @@ from app.models.inventory_log import InventoryLog
 from app.dependencies import get_current_shop
 from app.models.shop import Shop
 from app.models.credit_note import CreditNote, CreditNoteItem
+from app.models.purchase_return import PurchaseReturn
 
 router = APIRouter(prefix="/profit", tags=["Profit"])
 
@@ -389,7 +390,23 @@ def get_profit(
     total_revenue = sum(p["revenue"] for p in all_products_map.values())
     total_cost = sum(p["cost"] for p in all_products_map.values())
 
-    final_profit = total_revenue - total_cost - total_loss
+    # Moving-average redesign, Phase 5: net gain/loss booked on purchase
+    # returns (Debit Notes only — inventory_valuation_variance is always
+    # 0.0 on a Credit Note). Positive = loss, negative = gain, so it's
+    # subtracted the same way total_loss is: a loss reduces profit, a
+    # gain (negative variance) increases it.
+    purchase_return_variance_query = db.query(
+        func.sum(PurchaseReturn.inventory_valuation_variance)
+    ).filter(
+        PurchaseReturn.shop_id == current_shop.id,
+        PurchaseReturn.note_type == "D"
+    )
+    purchase_return_variance_query = apply_date_filter(
+        purchase_return_variance_query, PurchaseReturn.created_at
+    )
+    total_purchase_return_variance = purchase_return_variance_query.scalar() or 0.0
+
+    final_profit = total_revenue - total_cost - total_loss - total_purchase_return_variance
 
     growth_percentage = None
     if filter in ["today", "week", "month"]:
@@ -431,7 +448,16 @@ def get_profit(
             InventoryLog.created_at < prev_end
         ).scalar() or 0.0
 
-        prev_profit = prev_sales_profit - prev_returns_profit - prev_loss
+        prev_purchase_return_variance = db.query(
+            func.sum(PurchaseReturn.inventory_valuation_variance)
+        ).filter(
+            PurchaseReturn.shop_id == current_shop.id,
+            PurchaseReturn.note_type == "D",
+            PurchaseReturn.created_at >= prev_start,
+            PurchaseReturn.created_at < prev_end
+        ).scalar() or 0.0
+
+        prev_profit = prev_sales_profit - prev_returns_profit - prev_loss - prev_purchase_return_variance
         
         if prev_profit != 0:
             growth_percentage = ((final_profit - prev_profit) / abs(prev_profit)) * 100
@@ -443,7 +469,11 @@ def get_profit(
         "cost": total_cost,
         "profit": final_profit,
         "loss": total_loss,
-        "expense": total_expense
+        "expense": total_expense,
+        # Moving-average redesign, Phase 5. Already folded into "profit"
+        # above; exposed separately so the UI can show it as its own line
+        # item instead of it being invisibly absorbed into "loss".
+        "purchaseReturnVariance": total_purchase_return_variance
     }
     
     if growth_percentage is not None:
