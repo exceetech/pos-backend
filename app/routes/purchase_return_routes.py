@@ -18,9 +18,12 @@ from datetime import datetime
 from app.util.time_utils import epoch_ms_to_local
 from typing import List
 
+from sqlalchemy import func
+
 from app.database import get_db
 from app.dependencies import get_current_shop
 from app.models.purchase_return import PurchaseReturn
+from app.models.purchase_item import PurchaseItem
 from app.schemas.purchase_return_schema import (
     PurchaseReturnCreateRequest,
     PurchaseReturnSyncRequest,
@@ -116,8 +119,71 @@ def validate_gstr2_fields(r) -> str | None:
     return None
 
 
+def check_over_return(db: Session, shop_id: int, payload, exclude_return_id: int | None = None) -> str | None:
+    """
+    Phase 5 guard: reject a return that would push the total quantity
+    returned against (original_invoice_id, shop_product_id) past what
+    was actually purchased on that invoice line.
+
+    Deliberately skipped (returns None, i.e. "OK") whenever either id is
+    missing — old app builds, rows whose purchase hasn't synced up yet,
+    or the untraceable "leftover balance" rows Phase 2 introduced on the
+    client all omit one or both ids, and rejecting those would break
+    real, legitimate syncs. This is a guard against a clearly-impossible
+    total, not a guarantee every row can be checked.
+    """
+    original_invoice_id = getattr(payload, "original_invoice_id", None)
+    shop_product_id = getattr(payload, "shop_product_id", None)
+    if not original_invoice_id or not shop_product_id:
+        return None
+
+    purchased_qty = (
+        db.query(func.coalesce(func.sum(PurchaseItem.quantity), 0.0))
+        .filter(
+            PurchaseItem.purchase_id == original_invoice_id,
+            PurchaseItem.shop_product_id == shop_product_id,
+        )
+        .scalar()
+    )
+    if not purchased_qty:
+        # No matching invoice line found server-side (e.g. the invoice
+        # itself hasn't synced yet) — can't check, so don't block.
+        return None
+
+    already_returned_query = db.query(
+        func.coalesce(func.sum(PurchaseReturn.quantity_returned), 0.0)
+    ).filter(
+        PurchaseReturn.shop_id == shop_id,
+        PurchaseReturn.original_invoice_id == original_invoice_id,
+        PurchaseReturn.shop_product_id == shop_product_id,
+    )
+    if exclude_return_id is not None:
+        already_returned_query = already_returned_query.filter(PurchaseReturn.id != exclude_return_id)
+    already_returned = already_returned_query.scalar() or 0.0
+
+    new_quantity = getattr(payload, "quantity_returned", 0.0) or 0.0
+    if already_returned + new_quantity > purchased_qty + 0.01:
+        return (
+            f"quantity_returned would push total returned for this purchase item to "
+            f"{already_returned + new_quantity} which exceeds the {purchased_qty} originally purchased"
+        )
+    return None
+
+
 def _to_model(payload, shop_id: int) -> PurchaseReturn:
     """Map a DTO (or DTO-shaped request) onto a fresh ORM row."""
+    # Bug fix (Phase 6): `getattr(payload, "note_type", "D")` never actually
+    # fell back to "D" — payload is a Pydantic model where note_type is a
+    # declared (Optional) field, so it's always present and getattr just
+    # returns its real value, None on legacy/pre-v25 clients that omit it.
+    # `None == "D"` is False, so every one of the three checks below that used
+    # to inline this pattern silently mislabelled a legacy purchase return as
+    # a Credit Note instead of defaulting to a Debit Note. It went unnoticed
+    # because validate_gstr2_fields() only runs `if note_type == "D"`, so a
+    # None-note_type row skips validation entirely — nothing ever surfaced
+    # the wrong label. Effective note_type now defaults to "D" (purchase
+    # returns are debit notes by default) whenever the client didn't send one.
+    note_type_effective = getattr(payload, "note_type", None) or "D"
     return PurchaseReturn(
         shop_id                 = shop_id,
         local_id                = getattr(payload, "local_id", None),
@@ -152,12 +218,12 @@ def _to_model(payload, shop_id: int) -> PurchaseReturn:
         cess_amount             = getattr(payload, "cess_amount", 0.0),
         tax_amount              = getattr(payload, "tax_amount", 0.0),
         total_amount            = getattr(payload, "total_amount", 0.0),
-        document_type           = getattr(payload, "document_type", None) or ("Debit Note" if getattr(payload, "note_type", "D") == "D" else "Credit Note"),
-        document_nature         = getattr(payload, "document_nature", None) or ("Debit Note" if getattr(payload, "note_type", "D") == "D" else "Credit Note"),
+        document_type           = getattr(payload, "document_type", None) or ("Debit Note" if note_type_effective == "D" else "Credit Note"),
+        document_nature         = getattr(payload, "document_nature", None) or ("Debit Note" if note_type_effective == "D" else "Credit Note"),
         document_series         = getattr(payload, "document_series", None) or (
-            getattr(payload, "note_number", "").split("-")[0] 
+            getattr(payload, "note_number", "").split("-")[0]
             if getattr(payload, "note_number", "") and "-" in getattr(payload, "note_number", "")
-            else ("DN" if getattr(payload, "note_type", "D") == "D" else "CN")
+            else ("DN" if note_type_effective == "D" else "CN")
         ),
         pre_gst                 = getattr(payload, "pre_gst", "N"),
         reason_for_issuing_document = getattr(payload, "reason_for_issuing_document", "Purchase return"),
@@ -200,6 +266,13 @@ def create_purchase_return(
         )
 
     err = validate_gstr2_fields(payload)
+    if err:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=err,
+        )
+
+    err = check_over_return(db, current_shop.id, payload)
     if err:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -250,6 +323,9 @@ def sync_purchase_returns(
 
             # Idempotent on (shop_id, local_id): a retried/duplicate push of the
             # same offline row must not insert a second debit note (Sync audit S2).
+            # This must run BEFORE the over-return guard below — otherwise a
+            # retried push of an already-inserted row would count that row's
+            # own quantity twice (once already committed, once as "new").
             existing = None
             if r.local_id is not None:
                 existing = db.query(PurchaseReturn).filter(
@@ -260,6 +336,14 @@ def sync_purchase_returns(
             if existing is not None:
                 response.record_id_map[str(r.local_id)] = existing.id
                 response.success_count += 1
+                continue
+
+            err = check_over_return(db, current_shop.id, r)
+            if err:
+                response.failed.append({
+                    "local_id": r.local_id,
+                    "reason": err,
+                })
                 continue
 
             row = _to_model(r, current_shop.id)
