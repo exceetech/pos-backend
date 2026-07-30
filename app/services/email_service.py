@@ -117,18 +117,23 @@ eXCee Team
 async def send_gst_report_email(shop, report_type: str, start_date: str, end_date: str, db):
     """
     Generate and email a GST report (gstr1 / gstr2 / hsn).
-    Sales-side data sourced from gst_sales_invoice(+items) — repointed off
-    the legacy gst_sales_records table per Report 3 fix A2/C1, so this email
-    can no longer disagree with the in-app GSTR-1 screen or drift out of
-    sync with cancellations. Purchase-side unaffected (gst_purchase_records
-    was never part of the dual-write problem).
+
+    GST-reports fix round 2, Phase 3: this used to be a THIRD, independent
+    implementation of the same numbers the in-app GSTR-1/GSTR-2 screens
+    compute — a hand-rolled aggregation for gstr1/hsn (duplicating logic
+    that could silently drift from the real endpoint), and for gstr2 a
+    query against `GstPurchaseRecord`, a table that was retired on the
+    Android side (see AppDatabase.kt's MIGRATION_42_43 note) and no longer
+    receives any data — meaning every emailed GSTR-2 report was reporting
+    on a frozen or empty purchase register regardless of what the shop
+    actually purchased.
+
+    Fixed by calling the real, already-fixed `get_gstr1()` / `get_gstr2()`
+    route functions directly and reading their totals — same numbers the
+    in-app screens show, computed exactly once, in exactly one place.
     """
-    from sqlalchemy import or_, and_
-    from app.models.gst_purchase_record import GstPurchaseRecord
-    from app.models.credit_note import CreditNote
-    from app.models.bill import Bill
-    from app.util.gst_sales_lookup import get_active_invoice_line_items
     from datetime import datetime
+    from app.routes.gst_routes import get_gstr1, get_gstr2
 
     try:
         start = datetime.strptime(start_date, "%Y-%m-%d")
@@ -144,74 +149,43 @@ async def send_gst_report_email(shop, report_type: str, start_date: str, end_dat
     subject = f"📊 {subject_map.get(report_type, 'GST Report')} | {start_date} to {end_date} — {shop.shop_name}"
 
     if report_type in ("gstr1", "hsn"):
-        line_items = get_active_invoice_line_items(db, shop.id, start, end)
-        taxable = sum(item.taxable_amount or 0.0 for _inv, item in line_items)
-        cgst = sum(item.cgst_amount or 0.0 for _inv, item in line_items)
-        sgst = sum(item.sgst_amount or 0.0 for _inv, item in line_items)
-        igst = sum(item.igst_amount or 0.0 for _inv, item in line_items)
-
-        # Deep-dive fix, Issue 4: this report used to only sum active
-        # invoice line items, so any Credit Note (customer return — should
-        # REDUCE the outward-supply totals) or Debit Note (extra billed
-        # quantity — should INCREASE them) issued in the period was silently
-        # missing, unlike the in-app GSTR-1 export (Gstr1Generator.kt) which
-        # already nets these in via its CDNR/CDNUR sections. That made this
-        # emailed summary disagree with the accurate in-app report whenever
-        # any credit/debit notes existed. Netted in here the same way, and
-        # excluded for notes against a since-cancelled bill so a voided
-        # invoice's notes don't linger in the mailed totals either.
-        notes = db.query(CreditNote).outerjoin(
-            Bill, CreditNote.original_invoice_number == Bill.bill_number
-        ).filter(
-            CreditNote.shop_id == shop.id,
-            CreditNote.created_at >= start,
-            CreditNote.created_at <= end,
-            or_(
-                Bill.id == None,
-                and_(Bill.active == True, Bill.is_cancelled == False)
-            )
-        ).all()
-
-        credit_note_count = 0
-        debit_note_count = 0
-        for note in notes:
-            sign = -1 if note.note_type == "C" else 1
-            taxable += sign * float(note.taxable_value or 0.0)
-            cgst += sign * float(note.cgst_amount or 0.0)
-            sgst += sign * float(note.sgst_amount or 0.0)
-            igst += sign * float(note.igst_amount or 0.0)
-            if note.note_type == "C":
-                credit_note_count += 1
-            else:
-                debit_note_count += 1
+        # get_gstr1() is a plain function underneath its @router.get
+        # decorator — calling it directly with the same args FastAPI's
+        # dependency injection would have supplied is the same pattern
+        # used to test it; no HTTP round-trip needed.
+        report = get_gstr1(start_date=start_date, end_date=end_date, db=db, current_shop=shop)
+        credit_note_count = sum(1 for r in report.cdnr if r.note_type == "C") + \
+            sum(1 for r in report.cdnur if r.note_type == "C")
+        debit_note_count = sum(1 for r in report.cdnr if r.note_type == "D") + \
+            sum(1 for r in report.cdnur if r.note_type == "D")
+        total_records = len(report.b2b) + len(report.b2cl) + len(report.b2cs)
 
         body = (
             f"GST Report: {subject_map.get(report_type)}\n"
             f"Shop: {shop.shop_name} | GSTIN: {shop.store_gstin or 'N/A'}\n"
             f"Period: {start_date} to {end_date}\n\n"
-            f"Total Records:  {len(line_items)}"
+            f"Total Records:  {total_records}"
             f" ({credit_note_count} credit note(s), {debit_note_count} debit note(s) applied)\n"
-            f"Taxable Value:  Rs.{taxable:.2f}\n"
-            f"CGST:           Rs.{cgst:.2f}\n"
-            f"SGST:           Rs.{sgst:.2f}\n"
-            f"IGST:           Rs.{igst:.2f}\n"
+            f"Taxable Value:  Rs.{report.total_taxable_value:.2f}\n"
+            f"CGST:           Rs.{report.total_cgst:.2f}\n"
+            f"SGST:           Rs.{report.total_sgst:.2f}\n"
+            f"IGST:           Rs.{report.total_igst:.2f}\n"
         )
 
     elif report_type == "gstr2":
-        records = db.query(GstPurchaseRecord).filter(
-            GstPurchaseRecord.shop_id == shop.id,
-            GstPurchaseRecord.invoice_date >= start,
-            GstPurchaseRecord.invoice_date <= end
-        ).all()
+        report = get_gstr2(start_date=start_date, end_date=end_date, db=db, current_shop=shop)
+        total_invoices = len(report.b2b) + len(report.b2bur) + len(report.imps) + len(report.impg)
+        taxable = sum(r.taxable_value for r in report.b2b) + sum(r.taxable_value for r in report.b2bur) + \
+            sum(r.taxable_value for r in report.imps) + sum(r.taxable_value for r in report.impg)
         body = (
             f"GSTR-2 Purchase Register\n"
             f"Shop: {shop.shop_name} | GSTIN: {shop.store_gstin or 'N/A'}\n"
             f"Period: {start_date} to {end_date}\n\n"
-            f"Total Invoices: {len(records)}\n"
-            f"Taxable Value:  Rs.{sum(r.taxable_value for r in records):.2f}\n"
-            f"ITC CGST:       Rs.{sum(r.cgst_amount for r in records):.2f}\n"
-            f"ITC SGST:       Rs.{sum(r.sgst_amount for r in records):.2f}\n"
-            f"ITC IGST:       Rs.{sum(r.igst_amount for r in records):.2f}\n"
+            f"Total Invoices: {total_invoices}\n"
+            f"Taxable Value:  Rs.{taxable:.2f}\n"
+            f"ITC CGST:       Rs.{report.total_itc_cgst:.2f}\n"
+            f"ITC SGST:       Rs.{report.total_itc_sgst:.2f}\n"
+            f"ITC IGST:       Rs.{report.total_itc_igst:.2f}\n"
         )
 
     else:

@@ -25,7 +25,14 @@ INDIA_STATES = {
     "36": "Telangana", "37": "Andhra Pradesh"
 }
 
-VALID_GST_RATES = {0.0, 0.1, 0.25, 1.5, 3.0, 5.0, 6.0, 7.5, 9.0, 12.0, 14.0, 18.0, 28.0}
+# Rates that shouldn't raise an "unusual rate" warning. Kept identical to
+# VALID_GST_RATES in the client's Gstr1Validator.kt — the two had drifted (this
+# one lacked 1 and 40, the client's lacked 9 and 14), so the same report could
+# be clean on one path and warned on the other. This is the union: deliberately
+# permissive, because the check is advisory and a false warning on a legitimate
+# rate is worse than staying quiet. A genuinely odd rate (13%, 22%, …) is still
+# caught.
+VALID_GST_RATES = {0.0, 0.1, 0.25, 1.0, 1.5, 3.0, 5.0, 6.0, 7.5, 9.0, 12.0, 14.0, 18.0, 28.0, 40.0}
 
 
 def extract_state_code(gstin: str) -> str:

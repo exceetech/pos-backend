@@ -83,6 +83,13 @@ class HsnSummaryItem(BaseModel):
     sgst_amount: float
     igst_amount: float
     total_tax: float
+    # Table 12 also files Total Value, Cess and Rate. All three were already
+    # being computed server-side and then discarded, so the client hardcoded
+    # rate/cess to 0 and reconstructed total value as taxable + tax (which
+    # silently drops cess). Carried properly now.
+    total_value: float = 0.0
+    cess_amount: float = 0.0
+    rate: float = 0.0
 
 
 # ============================================================
@@ -101,6 +108,14 @@ class Gstr1B2BInvoice(BaseModel):
     cgst: float
     sgst: float
     igst: float
+    # GSTR-1 Table 4 also needs these; previously missing, so reverse-charge
+    # supplies were filed as ordinary 4A sales, SEZ/deemed-export invoices were
+    # reported as "Regular", and cess was silently dropped.
+    receiver_name: str = ""
+    reverse_charge: str = "N"          # Y / N  → drives Table 4B
+    invoice_type: str = "Regular"      # Regular / SEZ supplies with payment / … / Deemed Exp
+    ecom_gstin: str = ""
+    cess_amount: float = 0.0
 
 
 class Gstr1B2CItem(BaseModel):
@@ -113,12 +128,134 @@ class Gstr1B2CItem(BaseModel):
     igst: float
 
 
+class Gstr1B2CLItem(BaseModel):
+    invoice_number: str
+    invoice_date: str
+    invoice_value: float
+    place_of_supply: str
+    rate: float
+    taxable_value: float
+    cess_amount: float = 0.0
+    ecom_gstin: str = ""
+
+
+class Gstr1B2CSItem(BaseModel):
+    type: str = "OE"  # "E" (via e-commerce operator) or "OE" (other)
+    place_of_supply: str
+    rate: float
+    taxable_value: float
+    cess_amount: float = 0.0
+    ecom_gstin: str = ""
+
+
+class Gstr1CdnrItem(BaseModel):
+    customer_gstin: str
+    receiver_name: str = ""
+    note_number: str
+    note_date: str
+    note_type: str  # "C" or "D"
+    place_of_supply: str
+    reverse_charge: str = "N"
+    note_supply_type: str = ""
+    note_value: float
+    rate: float
+    taxable_value: float
+    cess_amount: float = 0.0
+
+
+class Gstr1CdnurItem(BaseModel):
+    ur_type: str = ""
+    note_number: str
+    note_date: str
+    note_type: str
+    place_of_supply: str
+    note_value: float
+    rate: float
+    taxable_value: float
+    cess_amount: float = 0.0
+
+
+class Gstr1DocsItem(BaseModel):
+    nature_of_document: str
+    sr_from: str
+    sr_to: str
+    total_number: int
+    cancelled: int = 0
+
+
+class Gstr1EcoItem(BaseModel):
+    nature_of_supply: str
+    eco_gstin: str = ""
+    eco_name: str = ""
+    net_value: float
+    igst: float = 0.0
+    cgst: float = 0.0
+    sgst: float = 0.0
+    cess: float = 0.0
+
+
+class Gstr1EcoB2BItem(BaseModel):
+    supplier_gstin: str = ""
+    supplier_name: str = ""
+    recipient_gstin: str
+    recipient_name: str = ""
+    doc_number: str
+    doc_date: str
+    supply_value: float
+    place_of_supply: str
+    doc_type: str = "Invoice"
+    rate: float
+    taxable_value: float
+    cess_amount: float = 0.0
+
+
+class Gstr1EcoB2CItem(BaseModel):
+    supplier_gstin: str = ""
+    supplier_name: str = ""
+    place_of_supply: str
+    rate: float
+    taxable_value: float
+    cess_amount: float = 0.0
+
+
+class Gstr1EcoUrp2BItem(BaseModel):
+    recipient_gstin: str
+    recipient_name: str = ""
+    doc_number: str
+    doc_date: str
+    supply_value: float
+    place_of_supply: str
+    doc_type: str = "Invoice"
+    rate: float
+    taxable_value: float
+    cess_amount: float = 0.0
+
+
+class Gstr1EcoUrp2CItem(BaseModel):
+    place_of_supply: str
+    rate: float
+    taxable_value: float
+    cess_amount: float = 0.0
+
+
 class Gstr1Response(BaseModel):
     period_start: str
     period_end: str
     b2b: List[Gstr1B2BInvoice]
     b2c: List[Gstr1B2CItem]
+    b2cl: List[Gstr1B2CLItem] = []
+    b2cs: List[Gstr1B2CSItem] = []
+    cdnr: List[Gstr1CdnrItem] = []
+    cdnur: List[Gstr1CdnurItem] = []
+    docs: List[Gstr1DocsItem] = []
+    eco: List[Gstr1EcoItem] = []
+    eco_b2b: List[Gstr1EcoB2BItem] = []
+    eco_b2c: List[Gstr1EcoB2CItem] = []
+    eco_urp2b: List[Gstr1EcoUrp2BItem] = []
+    eco_urp2c: List[Gstr1EcoUrp2CItem] = []
     hsn_summary: List[HsnSummaryItem]
+    hsn_b2b: List[HsnSummaryItem] = []
+    hsn_b2c: List[HsnSummaryItem] = []
     total_taxable_value: float
     total_cgst: float
     total_sgst: float
@@ -156,6 +293,10 @@ class Gstr2B2burItem(BaseModel):
     invoice_value: float
     place_of_supply: str
     supply_type: str
+    # A purchase from an unregistered supplier is the textbook reverse-charge
+    # case, so this is the defining attribute of the table — yet B2B carried it
+    # and B2BUR didn't, even though Purchase.reverse_charge was already stored.
+    reverse_charge: str = "N"
     rate: float
     taxable_value: float
     igst: float
@@ -253,6 +394,9 @@ class Gstr2HsnsumItem(BaseModel):
     hsn: str
     description: str
     uqc: str
+    # Rows are grouped by (hsn, uqc, rate) — without carrying the rate there is
+    # no way to tell two rates of the same HSN apart once they're aggregated.
+    rate: float = 0.0
     total_quantity: float
     total_value: float
     taxable_value: float

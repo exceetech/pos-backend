@@ -1032,6 +1032,9 @@ async def email_report(
             monthly,
             products,
             peak_hours_data,
+            report_type=type,
+            period_start=start,
+            period_end=end,
             shop={
                 "name": current_shop.shop_name,
                 "address": current_shop.store_address,
