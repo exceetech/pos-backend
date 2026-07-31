@@ -1216,6 +1216,20 @@ def get_gstr2(
         ret_av_sgst = 0.0 if ret_blocked else (r.availed_itc_state_tax or 0.0)
         ret_av_cess = 0.0 if ret_blocked else (r.availed_itc_cess or 0.0)
 
+        # Bug found during a deeper audit of the cancelled-purchase/purchase-
+        # return interaction: these CDNR/CDNUR rows have always carried the
+        # ITC-reversal amount (ret_av_igst/cgst/sgst above), but nothing ever
+        # subtracted it from the summary totals below (total_itc_cgst/sgst/
+        # igst) — those are only ever incremented by the B2B/B2BUR and IMPS
+        # loops. A purchase return (full or partial) reduces the net ITC you
+        # can actually claim for the period, whether it's a registered-supplier
+        # note (CDNR) or an unregistered one (CDNUR), debit or credit note —
+        # either way it's a value adjustment against previously-availed ITC.
+        # Net it here so the headline totals match the sum of the detail rows.
+        total_itc_igst -= ret_av_igst
+        total_itc_cgst -= ret_av_cgst
+        total_itc_sgst -= ret_av_sgst
+
         if is_registered:
             cdnr_list.append(Gstr2CdnrItem(
                 supplier_gstin=r.supplier_gstin,
