@@ -9,7 +9,7 @@ from app.util.time_utils import local_now
 from app.database import get_db
 from app.models.sale_item import SaleItem
 from app.models.inventory_log import InventoryLog
-from app.dependencies import get_current_shop
+from app.dependencies import require_premium_tier
 from app.models.shop import Shop
 from app.models.credit_note import CreditNote, CreditNoteItem
 from app.models.purchase_return import PurchaseReturn
@@ -23,7 +23,11 @@ def get_profit(
     start_date: str = None,
     end_date: str = None,
     db: Session = Depends(get_db),
-    current_shop: Shop = Depends(get_current_shop)
+    # Premium-gated: profit reports/charts are Premium-only (onboarding/
+    # subscription plan §5.1/§5.2). require_premium_tier already runs the
+    # same auth/subscription checks get_current_shop did, plus the tier
+    # check.
+    current_shop: Shop = Depends(require_premium_tier)
 ):
 
     now = local_now()

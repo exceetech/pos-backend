@@ -11,7 +11,8 @@ from app.schemas.shop_schema import ShopRegister, ShopActivate, ForgotPasswordRe
 from app.security import verify_password, hash_password, create_access_token
 from app.security import create_access_token
 from app.services.email_service import send_registration_emails
-from app.dependencies import get_current_shop, require_admin
+from app.dependencies import get_current_shop, get_current_shop_no_subscription, require_admin
+from app.services.app_config_service import get_config, get_config_bool
 import secrets
 import hashlib
 from datetime import datetime, timedelta
@@ -170,13 +171,98 @@ def login(
 
 # ================= GET MY PROFILE =================
 @router.get("/me")
-def get_my_profile(current_shop: Shop = Depends(get_current_shop)):
+def get_my_profile(
+    db: Session = Depends(get_db),
+    # NOT get_current_shop — this is the endpoint Splash/MainActivity use
+    # for the onboarding routing gate (plan §2.2), which must work
+    # BEFORE a shop has any subscription at all (onboarding step 1 IS
+    # obtaining a subscription). get_current_shop's subscription
+    # requirement would 403 here during exactly the window this endpoint
+    # needs to report onboarding progress for. Same chicken-and-egg class
+    # of fix as get_current_shop_no_subscription's other call sites.
+    current_shop: Shop = Depends(get_current_shop_no_subscription)
+):
     return {
         "shop_name": current_shop.shop_name,
         "owner_name": current_shop.owner_name,
         "email": current_shop.email,
-        "status": current_shop.status
+        "status": current_shop.status,
+        # Onboarding routing gate fields (plan §2.2/§2.6) — Splash/
+        # MainActivity/ChangePasswordActivity all read
+        # onboarding_completed_at to decide whether to route into
+        # OnboardingActivity instead of Dashboard. The per-step flags let
+        # OnboardingActivity resume at the right step instead of
+        # restarting after an interruption.
+        "onboarding_completed_at": current_shop.onboarding_completed_at,
+        "onboarding_subscription_done": current_shop.onboarding_subscription_done,
+        "onboarding_shop_info_done": current_shop.onboarding_shop_info_done,
+        "onboarding_billing_done": current_shop.onboarding_billing_done,
+        "onboarding_terms_done": current_shop.onboarding_terms_done,
+        # Kill switch (plan §6.6) — every routing gate must check this
+        # BEFORE redirecting into OnboardingActivity, so onboarding
+        # enforcement can be turned off server-side (e.g. a bug found
+        # post-launch) without shipping a new APK.
+        "onboarding_enforcement_enabled": get_config_bool(db, "onboarding_enforcement_enabled"),
     }
+
+
+# ================= ONBOARDING =================
+
+@router.post("/accept-terms")
+def accept_terms(
+    current_shop: Shop = Depends(get_current_shop),
+    db: Session = Depends(get_db),
+):
+    """
+    Onboarding step 4. Uses the FULL get_current_shop (subscription
+    required) — by the time a shop reaches the terms step, step 1
+    (subscription) is already done, since the wizard's fixed order is
+    Subscription → Shop info → Billing → Terms (plan §2.1).
+    """
+    required_version = get_config(db, "required_terms_version")
+
+    current_shop.terms_accepted_at = utc_now()
+    current_shop.terms_version = required_version
+    if not current_shop.onboarding_terms_done:
+        current_shop.onboarding_terms_done = True
+
+    db.commit()
+
+    return {"message": "Terms accepted", "terms_version": required_version}
+
+
+@router.post("/complete-onboarding")
+def complete_onboarding(
+    current_shop: Shop = Depends(get_current_shop),
+    db: Session = Depends(get_db),
+):
+    """
+    Final onboarding step. Deliberately re-verifies all four sub-steps
+    server-side rather than trusting the app to have honestly walked
+    through the wizard (plan §2.5) — a modified client calling this
+    directly with steps skipped must not be able to stamp
+    onboarding_completed_at.
+    """
+    missing = [
+        name for name, done in [
+            ("subscription", current_shop.onboarding_subscription_done),
+            ("shop_info", current_shop.onboarding_shop_info_done),
+            ("billing", current_shop.onboarding_billing_done),
+            ("terms", current_shop.onboarding_terms_done),
+        ] if not done
+    ]
+
+    if missing:
+        raise HTTPException(
+            status_code=400,
+            detail={"error": "ONBOARDING_INCOMPLETE", "missing_steps": missing},
+        )
+
+    if not current_shop.onboarding_completed_at:
+        current_shop.onboarding_completed_at = utc_now()
+        db.commit()
+
+    return {"message": "Onboarding complete", "onboarding_completed_at": current_shop.onboarding_completed_at}
 
 # ================= CHANGE PASSWORD =================
 @router.post("/change-password")

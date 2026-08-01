@@ -9,7 +9,7 @@ from app.models.bill_items import BillItem
 from app.models.shop_products import ShopProduct
 from app.models.global_products import GlobalProduct
 
-from app.dependencies import get_current_shop
+from app.dependencies import require_premium_tier
 from app.models.bill import Bill
 from app.util.ai_cache import report_cache as _report_cache
 
@@ -23,7 +23,11 @@ router = APIRouter()
 @router.get("/analytics/ai-report")
 def get_ai_report(
     db: Session = Depends(get_db),
-    current_shop = Depends(get_current_shop)
+    # Premium-gated: AI Insights is a Premium-only feature (onboarding/
+    # subscription plan §5.1/§5.2). This endpoint previously had NO gate
+    # at all beyond a generic login check — reachable by every shop
+    # regardless of plan. require_premium_tier closes that.
+    current_shop = Depends(require_premium_tier)
 ):
     from app.services.insights_service import generate_structured_insights
 

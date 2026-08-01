@@ -20,3 +20,4 @@ gunicorn
 postgresql
 alembic
 httpx
+razorpay

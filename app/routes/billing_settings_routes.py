@@ -54,6 +54,11 @@ def update_settings(
     settings.default_gst = data.default_gst
     settings.printer_layout = data.printer_layout
 
+    # Onboarding step 3 complete — set-once, never unset (see
+    # shop_routes.update_store_settings for the same reasoning).
+    if not current_shop.onboarding_billing_done:
+        current_shop.onboarding_billing_done = True
+
     db.commit()
 
     return {"message": "Billing settings updated"}

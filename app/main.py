@@ -18,6 +18,7 @@ from app.routes import admin_routes
 from app.routes.admin_catalog_routes import router as admin_catalog_router
 from app.routes.analytics_routes import router as analytics_router
 from app.routes import subscription_routes as subscription
+from app.routes import subscription_payment_routes
 from app.routes import gst_routes
 from app.routes.global_catalog_routes import router as global_catalog_router
 from app.routes.purchase_routes import router as purchase_router
@@ -1080,6 +1081,114 @@ except Exception as e:  # pragma: no cover
     print(f"[startup] purchase_returns.inventory_valuation_variance migration skipped: {e}")
 
 
+# ──────────────────────────────────────────────────────────────────────
+# First-time onboarding + subscription tier/trial support.
+# create_all() above already creates the brand-new tables (plans,
+# coupons, coupon_redemptions, orders, processed_webhook_events,
+# app_config) on both fresh and already-deployed DBs, since those are
+# entirely new tables. It does NOT alter the existing shops/subscriptions
+# tables, so those columns need the same idempotent ALTER pattern as
+# everything else in this file.
+#
+# Existing-shop backfill (deliberate, one-time, safe to re-run): any shop
+# that already exists when this runs gets onboarding_completed_at set to
+# its created_at, terms_accepted_at set to now(), and every per-step
+# "done" flag set true — otherwise every shop created before this
+# feature shipped would suddenly get routed into the onboarding wizard
+# on next login, which is not the intent (onboarding is for genuinely
+# NEW shops going forward only). The WHERE clause makes the backfill a
+# no-op on repeat runs once it has applied once.
+# ──────────────────────────────────────────────────────────────────────
+def _add_onboarding_and_subscription_tier_columns() -> None:
+    from sqlalchemy import inspect, text
+
+    with engine.connect() as conn:
+        insp = inspect(engine)
+
+        if "shops" in insp.get_table_names():
+            cols = {c["name"] for c in insp.get_columns("shops")}
+            _add_column_if_missing(conn, "shops", cols, "onboarding_completed_at", "onboarding_completed_at TIMESTAMP NULL")
+            _add_column_if_missing(conn, "shops", cols, "onboarding_subscription_done", "onboarding_subscription_done BOOLEAN NOT NULL DEFAULT FALSE")
+            _add_column_if_missing(conn, "shops", cols, "onboarding_shop_info_done", "onboarding_shop_info_done BOOLEAN NOT NULL DEFAULT FALSE")
+            _add_column_if_missing(conn, "shops", cols, "onboarding_billing_done", "onboarding_billing_done BOOLEAN NOT NULL DEFAULT FALSE")
+            _add_column_if_missing(conn, "shops", cols, "onboarding_terms_done", "onboarding_terms_done BOOLEAN NOT NULL DEFAULT FALSE")
+            _add_column_if_missing(conn, "shops", cols, "terms_accepted_at", "terms_accepted_at TIMESTAMP NULL")
+            _add_column_if_missing(conn, "shops", cols, "terms_version", "terms_version VARCHAR NULL")
+            _add_column_if_missing(conn, "shops", cols, "has_used_trial", "has_used_trial BOOLEAN NOT NULL DEFAULT FALSE")
+            conn.commit()
+
+            # Backfill: only touches rows that predate this feature
+            # (onboarding_completed_at still NULL) and only runs once
+            # meaningfully — a second run finds nothing left to backfill.
+            conn.execute(text(
+                "UPDATE shops SET "
+                "onboarding_completed_at = created_at, "
+                "onboarding_subscription_done = TRUE, "
+                "onboarding_shop_info_done = TRUE, "
+                "onboarding_billing_done = TRUE, "
+                "onboarding_terms_done = TRUE, "
+                "terms_accepted_at = COALESCE(terms_accepted_at, created_at) "
+                "WHERE onboarding_completed_at IS NULL"
+            ))
+            conn.commit()
+
+        if "subscriptions" in insp.get_table_names():
+            cols = {c["name"] for c in insp.get_columns("subscriptions")}
+            _add_column_if_missing(conn, "subscriptions", cols, "tier", "tier VARCHAR NULL")
+            _add_column_if_missing(conn, "subscriptions", cols, "trial_started_at", "trial_started_at TIMESTAMP NULL")
+            conn.commit()
+
+            # Backfill: any existing subscription row without a tier is
+            # assumed premium (the only real plan admins have been
+            # manually activating so far) rather than left NULL, which
+            # would otherwise fail every tier-gate check for shops that
+            # are already legitimately paying customers.
+            conn.execute(text(
+                "UPDATE subscriptions SET tier = 'premium' WHERE tier IS NULL"
+            ))
+            conn.commit()
+
+try:
+    _add_onboarding_and_subscription_tier_columns()
+except Exception as e:  # pragma: no cover
+    print(f"[startup] onboarding/subscription-tier migration skipped: {e}")
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Seed the two default plans (base_monthly, premium_monthly) so
+# GET /subscription/plans has something to return on a fresh deploy.
+# Idempotent — only inserts a plan_code that doesn't already exist, never
+# overwrites a price an admin may have since changed by hand in the DB.
+# Base is priced at 0 deliberately: Base tier is free-forever per plan
+# §5.1 (billing/inventory/customers/returns/single-device — no report
+# gating), it exists in this table mainly so the onboarding wizard's
+# subscription step (Phase 7) can list it as a selectable option
+# alongside Premium and the trial, not because anyone is ever charged
+# for it.
+# ──────────────────────────────────────────────────────────────────────
+def _seed_default_plans() -> None:
+    from app.models.plan import Plan
+
+    db = SessionLocal()
+    try:
+        existing_codes = {p.plan_code for p in db.query(Plan.plan_code).all()}
+        defaults = [
+            Plan(plan_code="base_monthly", name="Base", tier="base", price_paise=0, duration_days=36500, is_active=True),
+            Plan(plan_code="premium_monthly", name="Premium (Monthly)", tier="premium", price_paise=29900, duration_days=30, is_active=True),
+        ]
+        for plan in defaults:
+            if plan.plan_code not in existing_codes:
+                db.add(plan)
+        db.commit()
+    finally:
+        db.close()
+
+try:
+    _seed_default_plans()
+except Exception as e:  # pragma: no cover
+    print(f"[startup] default plan seeding skipped: {e}")
+
+
 # Routers
 app.include_router(auth_routes.router)
 app.include_router(product_routes.router)
@@ -1092,6 +1201,7 @@ app.include_router(admin_routes.router)
 app.include_router(admin_catalog_router)
 app.include_router(analytics_router)
 app.include_router(subscription.router)
+app.include_router(subscription_payment_routes.router)
 app.include_router(credit.router)
 app.include_router(inventory_routes.router)
 app.include_router(sales_routes.router)
@@ -1137,8 +1247,22 @@ def run_expiry_check():
     db.close()
 
 
+def run_order_reconciliation():
+    from app.services.order_reconciliation_service import reconcile_stuck_orders
+    db = SessionLocal()
+    try:
+        reconcile_stuck_orders(db)
+    finally:
+        db.close()
+
+
 # ⏰ Runs every 24 hours
 scheduler.add_job(run_expiry_check, "interval", hours=24)
+# ⏰ Order reconciliation (plan §6.4/§9) — checks Razorpay orders stuck
+# in "created" status for longer than the grace period. Runs far more
+# frequently than the expiry check since this is real money potentially
+# sitting unresolved, not a routine status sweep.
+scheduler.add_job(run_order_reconciliation, "interval", minutes=15)
 scheduler.start()
 
 

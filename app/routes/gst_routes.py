@@ -12,7 +12,7 @@ from sqlalchemy import or_, and_
 from sqlalchemy.orm import Session
 
 from app.database import get_db
-from app.dependencies import get_current_shop
+from app.dependencies import get_current_shop, require_premium_tier
 from app.services.gst_service import INDIA_STATES
 from app.models.gst_profile import StoreGstProfile
 # GstSalesRecord retired (Report 3, C3) — table dropped, model deleted.
@@ -257,7 +257,12 @@ def get_gstr1(
     start_date: str = Query(..., description="YYYY-MM-DD"),
     end_date: str = Query(..., description="YYYY-MM-DD"),
     db: Session = Depends(get_db),
-    current_shop = Depends(get_current_shop)
+    # Premium-gated: GST reports are a Premium-only feature (see the
+    # onboarding/subscription plan, §5.1/§5.2). require_premium_tier
+    # already runs the same auth/subscription checks get_current_shop
+    # does, plus the tier check, so this is a straight swap, not an
+    # addition of a second check.
+    current_shop = Depends(require_premium_tier)
 ):
     """
     Phase 1 (GSTR-1 online-parity plan): ported from the on-device
@@ -916,7 +921,7 @@ def get_gstr2(
     start_date: str = Query(..., description="YYYY-MM-DD"),
     end_date: str = Query(..., description="YYYY-MM-DD"),
     db: Session = Depends(get_db),
-    current_shop = Depends(get_current_shop)
+    current_shop = Depends(require_premium_tier)  # Premium-gated, see get_gstr1 above
 ):
     try:
         start = datetime.strptime(start_date, "%Y-%m-%d")
@@ -1342,7 +1347,7 @@ def get_hsn_summary(
     start_date: str = Query(..., description="YYYY-MM-DD"),
     end_date: str = Query(..., description="YYYY-MM-DD"),
     db: Session = Depends(get_db),
-    current_shop = Depends(get_current_shop)
+    current_shop = Depends(require_premium_tier)  # Premium-gated, see get_gstr1 above
 ):
     try:
         start = datetime.strptime(start_date, "%Y-%m-%d")
@@ -1400,7 +1405,7 @@ async def email_gst_report(
     start_date: str = Query(...),
     end_date: str = Query(...),
     db: Session = Depends(get_db),
-    current_shop = Depends(get_current_shop)
+    current_shop = Depends(require_premium_tier)  # Premium-gated, see get_gstr1 above
 ):
     """
     Backend-triggered email of GST report.

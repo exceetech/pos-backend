@@ -40,23 +40,14 @@ def require_admin(x_admin_token: Optional[str] = Header(None)) -> None:
         raise HTTPException(status_code=401, detail="Admin authorization required")
 
 
-def get_current_shop(
-    request: Request,
-    token: str = Depends(oauth2_scheme),
-    db: Session = Depends(get_db)
-) -> Shop:
+def _validate_shop_session(request: Request, token: str, db: Session) -> Shop:
     """
-    Validates the bearer token and returns the active Shop.
-
-    Checks (in order):
-      1. JWT is valid and contains shop_id.
-      2. Shop exists in the database.
-      3. Shop status is ACTIVE (not PENDING or ARCHIVED).
-      4. workspace_version in JWT matches DB — if the JWT carries a version
-         and it differs from the current DB value the workspace was rotated
-         or restored while this token was live → 409 WORKSPACE_CHANGED.
-      5. Device ID header matches bound device.
-      6. Active, non-expired subscription exists.
+    Shared steps 1-5 (JWT, shop exists, ACTIVE status, workspace version,
+    device binding) — everything EXCEPT the subscription check, which is
+    deliberately factored out into get_current_shop() below. Extracted so
+    get_current_shop() and get_current_shop_no_subscription() can't drift
+    out of sync on the security-relevant parts (device binding especially)
+    the way two independent copies inevitably would over time.
     """
 
     # ── 1. Decode JWT ─────────────────────────────────────────────────────────
@@ -132,22 +123,124 @@ def get_current_shop(
             detail="Access denied: different device detected"
         )
 
+    return shop
+
+
+def get_current_shop(
+    request: Request,
+    token: str = Depends(oauth2_scheme),
+    db: Session = Depends(get_db)
+) -> Shop:
+    """
+    Validates the bearer token and returns the active Shop, requiring an
+    existing active/trial, unexpired subscription (see
+    _validate_shop_session for steps 1-5; this adds step 6).
+
+    Deliberately still a hard requirement, not a soft Base-tier fallback:
+    a shop with no subscription at all gets no app access whatsoever —
+    this is the existing, intentional product behavior (confirmed
+    2026-08-01: no free-forever Base-tier access; Base only exists as a
+    tier DISTINCTION from Premium once a shop has SOME subscription, paid
+    or trial or the free base_monthly plan — see subscription_pricing
+    /Plan.price_paise == 0 for that "free but still a real subscription
+    row" path). A shop must go through create-order (even for the free
+    Base plan) or start-trial to get in.
+
+    IMPORTANT: this is why the subscription-purchase endpoints
+    themselves (GET /subscription/plans, validate-coupon, create-order,
+    verify-payment, start-trial) must NOT depend on this function — a
+    brand-new shop with zero subscription rows would 403 here before
+    ever reaching the code that lets it obtain one, a chicken-and-egg
+    lockout. Those five routes depend on get_current_shop_no_subscription
+    instead, which runs the same steps 1-5 but skips step 6.
+    """
+    shop = _validate_shop_session(request, token, db)
+
     # ── 6. Subscription check ─────────────────────────────────────────────────
     subscription = (
         db.query(Subscription)
-        .filter(Subscription.shop_id == shop_id)
+        .filter(Subscription.shop_id == shop.id)
         .order_by(Subscription.expiry_date.desc())
         .first()
     )
 
     if not subscription:
         raise HTTPException(status_code=403, detail="No active subscription")
-    if subscription.status != "active":
+    # "trial" is a genuine usable-access status, equivalent to "active" for
+    # gating purposes — see Phase 4 of the onboarding/subscription plan.
+    # This check used to be `!= "active"` only, which would have silently
+    # locked every trialing shop out of the entire app the moment the
+    # trial feature shipped, since get_current_shop() gates every
+    # authenticated endpoint, not just the tier-gated ones added in
+    # Phase 3. Caught here before that ever reached production.
+    if subscription.status not in ("active", "trial"):
         raise HTTPException(status_code=403, detail="Subscription inactive")
     if subscription.expiry_date < utc_now():
         raise HTTPException(status_code=403, detail="Subscription expired")
 
     return shop
+
+
+def get_current_shop_no_subscription(
+    request: Request,
+    token: str = Depends(oauth2_scheme),
+    db: Session = Depends(get_db)
+) -> Shop:
+    """
+    Same as get_current_shop() (JWT, shop exists, ACTIVE status,
+    workspace version, device binding — the real security checks) but
+    WITHOUT requiring an existing subscription. Use this, never
+    get_current_shop, for the handful of routes a shop must be able to
+    call BEFORE it has any subscription at all: GET /subscription/plans,
+    validate-coupon, create-order, verify-payment, start-trial.
+
+    Does not skip device binding — unlike the older get_current_shop_id()
+    below, which was already a lighter-weight option but drops device
+    validation entirely, not safe to use for endpoints that create real
+    financial orders.
+    """
+    return _validate_shop_session(request, token, db)
+
+
+def require_premium_tier(
+    current_shop: Shop = Depends(get_current_shop),
+    db: Session = Depends(get_db),
+) -> Shop:
+    """
+    Second-layer gate for Premium-only features (GST reports, profit
+    reports, AI insights). Runs AFTER get_current_shop() has already
+    confirmed the shop has some active/trial subscription — this only
+    adds the tier check on top.
+
+    This is the actual security boundary for tier-gating: a modified
+    client cannot be trusted to self-enforce a UI-only lock, so every
+    Premium-only route must depend on this function (not just
+    get_current_shop) rather than relying on the Android app hiding the
+    entry point.
+    """
+    subscription = (
+        db.query(Subscription)
+        .filter(Subscription.shop_id == current_shop.id)
+        .order_by(Subscription.expiry_date.desc())
+        .first()
+    )
+
+    # get_current_shop() already guarantees a subscription exists and is
+    # active/trial and unexpired by this point, but re-check defensively
+    # rather than assume — this function must be safe to depend on
+    # directly in future routes even if someone forgets to also chain
+    # get_current_shop() explicitly (FastAPI resolves the Depends(...)
+    # default above regardless, but the intent should be explicit here).
+    if not subscription or subscription.tier != "premium":
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "error": "PREMIUM_REQUIRED",
+                "message": "This feature requires a Premium subscription.",
+            },
+        )
+
+    return current_shop
 
 
 def get_current_shop_id(

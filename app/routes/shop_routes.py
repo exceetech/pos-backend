@@ -56,6 +56,12 @@ def update_store_settings(
 
     current_shop.type = data.type
 
+    # Onboarding step 2 complete — set-once, never unset by a later edit
+    # (plan §2.6). A shop editing its settings again after onboarding
+    # finished is just normal use, not a re-onboarding.
+    if not current_shop.onboarding_shop_info_done:
+        current_shop.onboarding_shop_info_done = True
+
     db.commit()
     db.refresh(current_shop)
 

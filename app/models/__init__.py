@@ -26,6 +26,13 @@ from .customer import Customer
 # included, so a model registered only at router-import time would never get
 # its table created.
 from .supplier import Supplier
+from .plan import Plan
+from .coupon import Coupon
+from .coupon_redemption import CouponRedemption
+from .order import Order
+from .processed_webhook_event import ProcessedWebhookEvent
+from .app_config import AppConfig
+from .audit_log import AuditLog
 
 __all__ = [
     "Bill",
@@ -52,4 +59,11 @@ __all__ = [
     "ShopCategory",
     "Customer",
     "Supplier",
+    "Plan",
+    "Coupon",
+    "CouponRedemption",
+    "Order",
+    "ProcessedWebhookEvent",
+    "AppConfig",
+    "AuditLog",
 ]

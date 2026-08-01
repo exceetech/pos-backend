@@ -52,3 +52,29 @@ class Shop(Base):
     #   ALTER TABLE shops ADD COLUMN IF NOT EXISTS workspace_version INTEGER DEFAULT 1;
     #   UPDATE shops SET workspace_version = 1 WHERE workspace_version IS NULL;
     workspace_version = Column(Integer, default=1, nullable=False)
+
+    # ── First-time onboarding (subscription/shop-info/billing/terms wizard) ──
+    # NULL means onboarding is incomplete; a shop must not reach the
+    # dashboard until this is stamped. Deliberately separate from
+    # is_first_login above, which is a one-shot password-change signal only
+    # and gets flipped by /auth/login before onboarding would even run.
+    # Applied to DB via idempotent ALTER in main.py (see
+    # _add_onboarding_and_terms_columns()).
+    onboarding_completed_at = Column(DateTime, nullable=True)
+
+    # Per-step completion, so an interrupted onboarding resumes at the right
+    # step on next login instead of restarting the whole wizard.
+    onboarding_subscription_done = Column(Boolean, default=False, nullable=False)
+    onboarding_shop_info_done = Column(Boolean, default=False, nullable=False)
+    onboarding_billing_done = Column(Boolean, default=False, nullable=False)
+    onboarding_terms_done = Column(Boolean, default=False, nullable=False)
+
+    terms_accepted_at = Column(DateTime, nullable=True)
+    # Lets a future terms update force re-acceptance by bumping this and
+    # comparing against the currently-required version server-side.
+    terms_version = Column(String, nullable=True)
+
+    # ── Trial ────────────────────────────────────────────────────────────
+    # One trial per shop, enforced here — not resettable by re-logging in
+    # or clearing local app state, since this lives server-side.
+    has_used_trial = Column(Boolean, default=False, nullable=False)
