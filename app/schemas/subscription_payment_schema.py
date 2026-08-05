@@ -22,7 +22,21 @@ class ValidateCouponResponse(BaseModel):
     valid: bool
     original_amount_paise: int
     discount_amount_paise: int
+    # Plan price minus coupon discount, before service charge/GST —
+    # kept for backward compatibility with any caller that only wants
+    # the discounted plan price itself.
+    subtotal_after_discount_paise: int
+    service_charge_paise: int
+    gst_paise: int
+    # The true charged amount: subtotal + service charge + GST. The app
+    # must display this as "Total", not original/discount alone.
     final_amount_paise: int
+    # Non-zero only when this purchase is an upgrade from an existing
+    # paid Base subscription — credit for unused Base time, already
+    # subtracted from final_amount_paise. Based on what the shop actually
+    # paid last time, not plan list price — see
+    # subscription_entitlement_service.compute_upgrade_credit_paise.
+    upgrade_credit_paise: int = 0
 
 
 class CreateOrderRequest(BaseModel):
@@ -35,6 +49,10 @@ class CreateOrderResponse(BaseModel):
     razorpay_order_id: str
     razorpay_key_id: str
     amount_paise: int
+    subtotal_after_discount_paise: int
+    service_charge_paise: int
+    gst_paise: int
+    upgrade_credit_paise: int = 0
     currency: str = "INR"
     # True when the discounted price is zero — the app must skip
     # Razorpay's checkout entirely and call verify-free-order instead

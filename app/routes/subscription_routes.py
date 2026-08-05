@@ -12,6 +12,10 @@ from app.models.order import Order
 from app.models.shop import Shop
 from app.services.email_service import send_subscription_email
 from app.services.audit_log_service import log_event
+from app.services.subscription_entitlement_service import (
+    is_trial_offerable, resolve_entitlement_state, apply_transition,
+)
+from app.models.plan import Plan
 
 router = APIRouter(prefix="/subscription", tags=["Subscription"])
 
@@ -41,26 +45,30 @@ def get_subscription(
             "remaining_days": 0,
             "expiry_date": None,
             "has_used_trial": current_shop.has_used_trial,
+            # No live subscription at all → trial is offerable purely
+            # based on has_used_trial. See is_trial_offerable below for
+            # why the app must read THIS field instead of just negating
+            # has_used_trial itself (that was the bug: the trial card
+            # kept showing for a shop already on a paid Base plan).
+            "is_trial_offerable": is_trial_offerable(current_shop.has_used_trial, None),
         }
 
     # Ceil so 23h-left reads as 1 day (not 0/'expired') — off-by-a-day fix.
     remaining_days = math.ceil((sub.expiry_date - utc_now()).total_seconds() / 86400)
 
-    # Two independent ways a subscription can be expired, and this must
-    # report "expired" for either: (1) time-based — expiry_date has
-    # passed, regardless of whether the 24h expiry cron has gotten
-    # around to flipping sub.status yet; (2) an explicit status override
-    # — e.g. admin_refund_order sets status="expired" immediately
-    # without touching expiry_date, since a refund is "this is no longer
-    # valid right now," not "this was never going to expire until a
-    # later date." Checking remaining_days alone (as this used to) missed
-    # case (2) entirely: a refunded subscription with time nominally left
-    # on its original expiry_date would report "active" here even though
-    # get_current_shop() correctly 403s every request against it —
-    # enforcement was right, the status the user SAW was wrong.
-    if remaining_days <= 0 or sub.status == "expired":
+    # Single shared classifier — replaces a hand-rolled "expired if
+    # remaining_days<=0 OR status=='expired'" check that used to live
+    # here as its own copy of the same rule. resolve_entitlement_state
+    # already covers both cases this used to special-case by hand: a
+    # time-based expiry (expiry_date has passed, regardless of whether
+    # the 24h sweep has flipped sub.status yet) and an explicit status
+    # override (e.g. admin_refund_order setting status="expired" without
+    # touching expiry_date) — both fall out of the same expiry_date-first
+    # check inside resolve_entitlement_state.
+    state = resolve_entitlement_state(sub)
+    if state == "expired":
         reported_status = "expired"
-    elif sub.status == "trial":
+    elif state == "trialing":
         reported_status = "trial"
     else:
         reported_status = "active"
@@ -77,6 +85,11 @@ def get_subscription(
         "remaining_days": max(remaining_days, 0),
         "status": reported_status,
         "has_used_trial": current_shop.has_used_trial,
+        # The app must use THIS to decide whether to show the trial
+        # card/button — never `not has_used_trial` alone. False whenever
+        # the shop has a live active_base/active_premium subscription,
+        # closing the "trial card shown while already on paid Base" bug.
+        "is_trial_offerable": is_trial_offerable(current_shop.has_used_trial, sub),
     }
 
 
@@ -109,36 +122,23 @@ def admin_activate_subscription(
     if tier not in ("base", "premium"):
         return {"error": "Invalid tier — must be 'base' or 'premium'"}
 
-    start = utc_now()
-    expiry = start + timedelta(days=duration)
-
     # 🔍 Get shop (NEW)
     shop = db.query(Shop).filter(Shop.id == shop_id).first()
 
     if not shop:
         return {"error": "Shop not found"}
 
-    # 🔍 Subscription
-    sub = db.query(Subscription).filter(
-        Subscription.shop_id == shop_id
-    ).first()
-
-    if sub:
-        sub.plan = plan
-        sub.tier = tier
-        sub.start_date = start
-        sub.expiry_date = expiry
-        sub.status = "active"
-    else:
-        sub = Subscription(
-            shop_id=shop_id,
-            plan=plan,
-            tier=tier,
-            start_date=start,
-            expiry_date=expiry,
-            status="active"
-        )
-        db.add(sub)
+    # Routed through apply_transition() instead of writing plan/tier/
+    # dates/status directly — this used to be its own separate copy of
+    # the same "grant a subscription" logic every other path (start-
+    # trial, activate_order) now shares. Always a "fresh" grant (full
+    # duration from now), matching this endpoint's pre-existing
+    # behavior — an admin-activate is a manual override, not expected to
+    # respect a Base shop's remaining days the way a real upgrade would.
+    sub = db.query(Subscription).filter(Subscription.shop_id == shop_id).first()
+    synthetic_plan = Plan(plan_code=plan, tier=tier, duration_days=duration, price_paise=0, name=plan)
+    sub = apply_transition(db, sub, shop_id, synthetic_plan, "fresh")
+    expiry = sub.expiry_date
 
     db.commit()
 
@@ -182,9 +182,14 @@ def admin_extend_subscription(
     # that still has weeks left.
     base = max(sub.expiry_date, utc_now()) if sub.expiry_date else utc_now()
     sub.expiry_date = base + timedelta(days=extra_days)
+    # Re-derive status from the shared classifier now that expiry_date
+    # has moved into the future, instead of a local copy of the same
+    # "was expired, now isn't" rule — resolve_entitlement_state's
+    # explicit-status-override check (see subscription_entitlement_
+    # service) also means this correctly un-sticks a refund-expired
+    # subscription, not just a time-expired one.
     if sub.status == "expired":
         sub.status = "trial" if sub.plan == "trial" else "active"
-
     db.commit()
 
     log_event(db, shop_id, "admin_extended", f"extra_days={extra_days}")

@@ -8,6 +8,7 @@ from app.dependencies import require_admin
 from app.models.shop import Shop
 from app.models.subscription import Subscription
 from app.firebase_service import send_broadcast
+from app.util.time_utils import utc_now
 
 # Security fix: this router previously had NO authentication of any kind —
 # broadcast-to-every-device, archived-shop PII lookup by email, and the
@@ -192,8 +193,18 @@ def restore_shop(archived_shop_id: int, db: Session = Depends(get_db)):
         .first()
     )
     if restored_sub:
-        restored_sub.status  = "active"
         restored_sub.shop_id = archived_shop_id
+        # This is a workspace ownership swap, not a purchase/grant — it
+        # must not force status="active" the way this used to. That
+        # would report a subscription as active even if it had already
+        # genuinely expired while the shop was archived, contradicting
+        # what every live entitlement check (get_current_shop,
+        # GET /subscription/) would independently conclude the moment
+        # after this commits. Only correct the status when the moved
+        # subscription is factually expired; otherwise leave its
+        # existing status (active/trial) exactly as it was.
+        if restored_sub.expiry_date and restored_sub.expiry_date <= utc_now():
+            restored_sub.status = "expired"
 
     # ── STEP 8: Commit (atomic) ───────────────────────────────────────────────
     db.commit()

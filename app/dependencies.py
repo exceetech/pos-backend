@@ -10,6 +10,7 @@ from app.database import get_db
 from app.security import verify_token_full
 from app.models.shop import Shop
 from app.models.subscription import Subscription
+from app.services.subscription_entitlement_service import resolve_entitlement_state
 
 from fastapi.security import OAuth2PasswordBearer
 
@@ -157,6 +158,12 @@ def get_current_shop(
     shop = _validate_shop_session(request, token, db)
 
     # ── 6. Subscription check ─────────────────────────────────────────────────
+    # Routed through the same resolve_entitlement_state() used by
+    # subscription_entitlement_service and GET /subscription/ — this used
+    # to be its own hand-rolled copy of "is this subscription usable"
+    # (raw status-in-list + expiry_date comparison), which meant three
+    # independent implementations of the same rule existed across the
+    # codebase, free to silently drift apart. Now there's one.
     subscription = (
         db.query(Subscription)
         .filter(Subscription.shop_id == shop.id)
@@ -164,19 +171,14 @@ def get_current_shop(
         .first()
     )
 
-    if not subscription:
+    state = resolve_entitlement_state(subscription)
+    if state == "no_plan":
         raise HTTPException(status_code=403, detail="No active subscription")
-    # "trial" is a genuine usable-access status, equivalent to "active" for
-    # gating purposes — see Phase 4 of the onboarding/subscription plan.
-    # This check used to be `!= "active"` only, which would have silently
-    # locked every trialing shop out of the entire app the moment the
-    # trial feature shipped, since get_current_shop() gates every
-    # authenticated endpoint, not just the tier-gated ones added in
-    # Phase 3. Caught here before that ever reached production.
-    if subscription.status not in ("active", "trial"):
-        raise HTTPException(status_code=403, detail="Subscription inactive")
-    if subscription.expiry_date < utc_now():
+    if state == "expired":
         raise HTTPException(status_code=403, detail="Subscription expired")
+    # state is trialing/active_base/active_premium here — all genuine,
+    # usable access for gating purposes (Phase 4 of the onboarding/
+    # subscription plan: "trial" is equivalent to "active" here).
 
     return shop
 
@@ -231,7 +233,9 @@ def require_premium_tier(
     # directly in future routes even if someone forgets to also chain
     # get_current_shop() explicitly (FastAPI resolves the Depends(...)
     # default above regardless, but the intent should be explicit here).
-    if not subscription or subscription.tier != "premium":
+    # Uses the same resolve_entitlement_state() as get_current_shop()
+    # above, rather than a separate raw `.tier != "premium"` check.
+    if resolve_entitlement_state(subscription) != "active_premium":
         raise HTTPException(
             status_code=403,
             detail={

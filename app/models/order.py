@@ -36,6 +36,15 @@ class Order(Base):
 
     status = Column(String, default="created", nullable=False)
 
+    # fresh | renewal | upgrade | downgrade | trial_convert — classified
+    # by subscription_entitlement_service.classify_transition() at
+    # create-order time and stored here purely for auditability/reporting
+    # (e.g. "how many upgrades happened this month"). Never read back to
+    # make a security or pricing decision — those always re-derive from
+    # live Subscription state, not this label. Nullable because rows
+    # created before this column existed have no value for it.
+    order_type = Column(String, nullable=True)
+
     # Bucket B (technical bookkeeping timestamp, comparable to utc_now()
     # elsewhere in this codebase — e.g. Subscription.expiry_date) — NOT
     # local_now(), which is reserved for business event wall-clock times

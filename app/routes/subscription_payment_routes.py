@@ -32,9 +32,13 @@ from app.schemas.subscription_payment_schema import (
 )
 from app.services import razorpay_service
 from app.services.subscription_pricing_service import (
-    get_active_plan, validate_coupon_for_shop, compute_final_price,
+    get_active_plan, validate_coupon_for_shop, compute_pricing_breakdown,
 )
 from app.services.subscription_activation_service import activate_order
+from app.services.subscription_entitlement_service import (
+    is_trial_offerable, classify_transition, apply_transition,
+    compute_upgrade_credit_paise,
+)
 from app.services.rate_limit_service import check_rate_limit
 from app.services.app_config_service import get_config_int
 from app.services.audit_log_service import log_event
@@ -42,6 +46,30 @@ from app.services.audit_log_service import log_event
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/subscription", tags=["Subscription Payments"])
+
+
+def _reject_if_downgrade(transition: str, current_sub) -> None:
+    """
+    Downgrading (Premium -> Base) is blocked entirely while the current
+    Premium period is still running — deliberately simple, matching the
+    "block it" option chosen over building a scheduled/deferred-downgrade
+    feature. Without this, a shop could buy Base mid-cycle and the write
+    path (apply_transition) would immediately overwrite the subscription
+    to Base, discarding whatever paid Premium time was left, while still
+    being charged full Base price with no credit — never charge for a
+    purchase that would destroy value the shop already paid for.
+    """
+    if transition != "downgrade":
+        return
+    expiry_str = current_sub.expiry_date.isoformat() if current_sub and current_sub.expiry_date else "your current period ends"
+    raise HTTPException(
+        status_code=400,
+        detail=(
+            "You're on an active Premium subscription. Switching to Base isn't "
+            f"available until your current Premium period ends ({expiry_str}) — "
+            "come back after that to switch, or keep Premium and renew instead."
+        ),
+    )
 
 
 @router.get("/plans", response_model=list[PlanOut])
@@ -69,12 +97,34 @@ def validate_coupon(
     plan = get_active_plan(db, body.plan_code)
     coupon = validate_coupon_for_shop(db, body.coupon_code, current_shop.id)
 
-    final = compute_final_price(plan, coupon)
+    breakdown = compute_pricing_breakdown(plan, coupon)
+    final_amount = breakdown["final_amount_paise"]
+
+    # Preview the same upgrade credit create-order will actually apply,
+    # so the coupon screen's total matches what create-order returns a
+    # moment later — never a separate/approximate calculation.
+    current_sub = (
+        db.query(Subscription)
+        .filter(Subscription.shop_id == current_shop.id)
+        .order_by(Subscription.expiry_date.desc())
+        .first()
+    )
+    upgrade_credit = 0
+    transition = classify_transition(current_sub, plan, is_trial=False)
+    _reject_if_downgrade(transition, current_sub)
+    if transition == "upgrade":
+        upgrade_credit = compute_upgrade_credit_paise(db, current_sub, plan)
+        final_amount = max(0, final_amount - upgrade_credit)
+
     return ValidateCouponResponse(
         valid=True,
-        original_amount_paise=plan.price_paise,
-        discount_amount_paise=plan.price_paise - final,
-        final_amount_paise=final,
+        original_amount_paise=breakdown["original_amount_paise"],
+        discount_amount_paise=breakdown["discount_amount_paise"],
+        subtotal_after_discount_paise=breakdown["subtotal_after_discount_paise"],
+        service_charge_paise=breakdown["service_charge_paise"],
+        gst_paise=breakdown["gst_paise"],
+        final_amount_paise=final_amount,
+        upgrade_credit_paise=upgrade_credit,
     )
 
 
@@ -92,13 +142,40 @@ def create_order(
     if body.coupon_code:
         coupon = validate_coupon_for_shop(db, body.coupon_code, current_shop.id)
 
-    # Server-computed final price — the app never sends an amount.
-    final_amount = compute_final_price(plan, coupon)
+    # Server-computed final price — the app never sends an amount. This
+    # now includes the 2% service charge and 18% GST on top of the
+    # (possibly coupon-discounted) plan price — see
+    # subscription_pricing_service.compute_pricing_breakdown for the
+    # exact math. final_amount is what actually gets charged.
+    breakdown = compute_pricing_breakdown(plan, coupon)
+    final_amount = breakdown["final_amount_paise"]
+
+    # Entitlement classification — decides whether this purchase is a
+    # fresh buy, a renewal, an upgrade, or a downgrade based on the
+    # shop's CURRENT subscription, and (for an upgrade) subtracts a
+    # credit for unused Base time off the amount actually charged. See
+    # subscription_entitlement_service.compute_upgrade_credit_paise —
+    # the credit is based on what the shop actually paid last time
+    # (Order.amount_paise), never the plan's list price, so a
+    # coupon-discounted original purchase can't over-credit here.
+    current_sub = (
+        db.query(Subscription)
+        .filter(Subscription.shop_id == current_shop.id)
+        .order_by(Subscription.expiry_date.desc())
+        .first()
+    )
+    transition = classify_transition(current_sub, plan, is_trial=False)
+    _reject_if_downgrade(transition, current_sub)
+
+    credit_applied = 0
+    if transition == "upgrade":
+        credit_applied = compute_upgrade_credit_paise(db, current_sub, plan)
+        final_amount = max(0, final_amount - credit_applied)
 
     # Sanity bounds (plan §6/§7) — cheap insurance against a bug or
     # tampering upstream (e.g. a malformed Plan row, or a future coupon
     # type with a rounding error) producing a nonsensical order before it
-    # ever reaches Razorpay. Not a substitute for compute_final_price's
+    # ever reaches Razorpay. Not a substitute for compute_pricing_breakdown's
     # own floor-at-zero logic — a second, independent check.
     if final_amount < 0 or final_amount > 10_000_000:  # ₹0 .. ₹1,00,000
         logger.error("Rejected out-of-bounds order amount %s for shop %s plan %s", final_amount, current_shop.id, body.plan_code)
@@ -123,17 +200,29 @@ def create_order(
         .first()
     )
     if existing and existing.razorpay_order_id:
+        # Order.amount_paise already reflects the same breakdown (plan
+        # price + coupon + service charge + GST don't change between the
+        # original request and this retry), so it matches `breakdown`
+        # recomputed just above — reusing it here keeps the returned
+        # amount_paise consistent with what Razorpay was actually told.
         return CreateOrderResponse(
             order_db_id=existing.id,
             razorpay_order_id=existing.razorpay_order_id,
             razorpay_key_id=razorpay_service.get_public_key_id(),
             amount_paise=existing.amount_paise,
+            subtotal_after_discount_paise=breakdown["subtotal_after_discount_paise"],
+            service_charge_paise=breakdown["service_charge_paise"],
+            gst_paise=breakdown["gst_paise"],
+            upgrade_credit_paise=credit_applied,
             is_free=False,
         )
 
     # Zero-amount branch (e.g. a 100%-off coupon) — Razorpay's checkout
     # does not support a ₹0 charge, so skip it entirely and activate
-    # directly. See plan §6.1.
+    # directly. See plan §6.1. A 100%-off coupon zeroes the subtotal,
+    # which zeroes the service charge and GST too since both are
+    # percentages of that subtotal — so this branch still only triggers
+    # on a genuinely free order, not a "cheap after discount" one.
     if final_amount == 0:
         order = Order(
             shop_id=current_shop.id,
@@ -154,6 +243,10 @@ def create_order(
             razorpay_order_id="",
             razorpay_key_id="",
             amount_paise=0,
+            subtotal_after_discount_paise=0,
+            service_charge_paise=0,
+            gst_paise=0,
+            upgrade_credit_paise=credit_applied,
             is_free=True,
         )
 
@@ -166,6 +259,7 @@ def create_order(
         coupon_code=body.coupon_code,
         amount_paise=final_amount,
         status="created",
+        order_type=transition,
     )
     db.add(order)
     db.commit()
@@ -194,6 +288,10 @@ def create_order(
         razorpay_order_id=rp_order["id"],
         razorpay_key_id=razorpay_service.get_public_key_id(),
         amount_paise=final_amount,
+        subtotal_after_discount_paise=breakdown["subtotal_after_discount_paise"],
+        service_charge_paise=breakdown["service_charge_paise"],
+        gst_paise=breakdown["gst_paise"],
+        upgrade_credit_paise=credit_applied,
         is_free=False,
     )
 
@@ -301,30 +399,22 @@ def start_trial(
     if current_shop.has_used_trial:
         raise HTTPException(status_code=400, detail="You've already used your free trial")
 
-    trial_days = get_config_int(db, "trial_duration_days")
-
-    start = utc_now()
-    expiry = start + timedelta(days=trial_days)
-
     sub = db.query(Subscription).filter(Subscription.shop_id == current_shop.id).first()
-    if sub:
-        sub.plan = "trial"
-        sub.tier = "premium"
-        sub.start_date = start
-        sub.expiry_date = expiry
-        sub.status = "trial"
-        sub.trial_started_at = start
-    else:
-        sub = Subscription(
-            shop_id=current_shop.id,
-            plan="trial",
-            tier="premium",
-            start_date=start,
-            expiry_date=expiry,
-            status="trial",
-            trial_started_at=start,
+
+    # Entitlement gate — this is the fix for "starting a trial silently
+    # clobbers an active paid Base subscription". has_used_trial alone
+    # (checked above) is not enough; a live active_base/active_premium
+    # subscription must also block a trial, even for a shop that's never
+    # technically "used" one.
+    if not is_trial_offerable(current_shop.has_used_trial, sub):
+        raise HTTPException(
+            status_code=400,
+            detail="A trial isn't available while you have an active subscription",
         )
-        db.add(sub)
+
+    trial_days = get_config_int(db, "trial_duration_days")
+    trial_plan = Plan(plan_code="trial", tier="premium", duration_days=trial_days, price_paise=0, name="Trial")
+    sub = apply_transition(db, sub, current_shop.id, trial_plan, "trial_start")
 
     current_shop.has_used_trial = True
     # Onboarding step 1 complete — see the matching comment in

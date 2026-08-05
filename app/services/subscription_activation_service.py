@@ -7,7 +7,6 @@ calling this twice for the same already-paid Order must be a safe no-op,
 since verify-payment and the webhook can both race to confirm the same
 payment.
 """
-from datetime import timedelta
 from sqlalchemy.orm import Session
 
 from app.models.order import Order
@@ -17,6 +16,9 @@ from app.models.coupon_redemption import CouponRedemption
 from app.models.subscription import Subscription
 from app.models.shop import Shop
 from app.util.time_utils import utc_now
+from app.services.subscription_entitlement_service import (
+    classify_transition, apply_transition,
+)
 
 
 def activate_order(db: Session, order: Order, razorpay_payment_id: str | None) -> Subscription:
@@ -48,11 +50,15 @@ def activate_order(db: Session, order: Order, razorpay_payment_id: str | None) -
     if razorpay_payment_id:
         order.razorpay_payment_id = razorpay_payment_id
 
-    # A payment made while an existing, still-valid subscription is
-    # active starts the new period from now() rather than stacking on
-    # top of remaining time — see plan §4.8 (same rule applied to
-    # trial-to-paid transitions). Simpler and avoids odd banked-time
-    # edge cases; revisit only if this becomes a real complaint.
+    # Entitlement-aware transition — replaces the old blind overwrite.
+    # classify_transition() looks at whatever subscription state the shop
+    # is ACTUALLY in right now (no_plan/expired/trialing/active_base/
+    # active_premium) and decides whether this payment is a fresh
+    # purchase, a renewal (extends from current expiry, not now), an
+    # upgrade, a downgrade, or a trial→paid conversion. See
+    # subscription_entitlement_service for the full reasoning — this is
+    # what fixes the "Base subscription silently discarded" and
+    # "no upgrade credit" bugs.
     sub = (
         db.query(Subscription)
         .filter(Subscription.shop_id == shop_id)
@@ -60,28 +66,23 @@ def activate_order(db: Session, order: Order, razorpay_payment_id: str | None) -
         .first()
     )
 
-    start = utc_now()
-    expiry = start + timedelta(days=plan.duration_days)
-
-    if sub:
-        sub.plan = plan.plan_code
-        sub.tier = plan.tier
-        sub.start_date = start
-        sub.expiry_date = expiry
-        sub.status = "active"
-        # trial_started_at is deliberately left untouched (not cleared)
-        # even when converting from trial to paid — kept for analytics
-        # per plan §4.9 (trial-start vs. eventual outcome).
-    else:
-        sub = Subscription(
-            shop_id=shop_id,
-            plan=plan.plan_code,
-            tier=plan.tier,
-            start_date=start,
-            expiry_date=expiry,
-            status="active",
+    transition = classify_transition(sub, plan, is_trial=False)
+    if transition == "downgrade":
+        # Defense in depth — create_order already rejects a downgrade
+        # purchase before any Order is created (see
+        # subscription_payment_routes._reject_if_downgrade), so a paid
+        # Order should never reach here classified as a downgrade. If it
+        # somehow does (e.g. entitlement state changed between
+        # create-order and payment confirmation), fail loudly instead of
+        # silently discarding the shop's remaining Premium period.
+        raise ValueError(
+            f"Order {order.id} resolved to a downgrade transition, which should "
+            "have been rejected at create-order time — refusing to activate."
         )
-        db.add(sub)
+    sub = apply_transition(
+        db, sub, shop_id, plan, transition, funding_order_id=order.id,
+    )
+    order.order_type = transition
 
     # Coupon redemption — atomic in the same transaction as the paid
     # status flip, so two near-simultaneous payments can't both read

@@ -1155,31 +1155,72 @@ except Exception as e:  # pragma: no cover
 
 
 # ──────────────────────────────────────────────────────────────────────
-# Seed the two default plans (base_monthly, premium_monthly) so
-# GET /subscription/plans has something to return on a fresh deploy.
-# Idempotent — only inserts a plan_code that doesn't already exist, never
-# overwrites a price an admin may have since changed by hand in the DB.
-# Base is priced at 0 deliberately: Base tier is free-forever per plan
-# §5.1 (billing/inventory/customers/returns/single-device — no report
-# gating), it exists in this table mainly so the onboarding wizard's
-# subscription step (Phase 7) can list it as a selectable option
-# alongside Premium and the trial, not because anyone is ever charged
-# for it.
+# Seed the default plans so GET /subscription/plans has something to
+# return on a fresh deploy. Idempotent — only inserts a plan_code that
+# doesn't already exist, never overwrites a price an admin may have
+# since changed by hand in the DB. This is also how the four new
+# billing-cycle tiers (2026-08-02) reach an ALREADY-deployed database:
+# their plan_codes have never existed before, so the very next app
+# restart inserts them via this same idempotent path — no migration
+# needed for that part (a migration IS needed when an existing row's
+# price changes instead — see 0013 for the base/premium monthly price
+# update).
+#
+# Pricing (2026-08-02) — quarterly/half-yearly/yearly discounts follow
+# the same ~9% / ~17% / ~29% curve on both tiers so the savings feel
+# consistent regardless of which tier a shop picks. The two longest
+# commitments also get bonus days on top of the discount (15 extra days
+# on half-yearly, 30 extra — a 13th month — on yearly), stacked as a
+# separate incentive from the price break itself:
+#   Base:    699/mo · 1,899/3mo (90d) · 3,499/6mo (195d) · 5,999/12mo (395d)
+#   Premium: 999/mo · 2,699/3mo (90d) · 4,999/6mo (195d) · 8,499/12mo (395d)
 # ──────────────────────────────────────────────────────────────────────
 def _seed_default_plans() -> None:
     from app.models.plan import Plan
 
     db = SessionLocal()
     try:
-        existing_codes = {p.plan_code for p in db.query(Plan.plan_code).all()}
+        existing = {p.plan_code: p for p in db.query(Plan).all()}
         defaults = [
-            Plan(plan_code="base_monthly", name="Base", tier="base", price_paise=0, duration_days=36500, is_active=True),
-            Plan(plan_code="premium_monthly", name="Premium (Monthly)", tier="premium", price_paise=29900, duration_days=30, is_active=True),
+            Plan(plan_code="base_monthly", name="Base", tier="base", price_paise=69900, duration_days=30, is_active=True),
+            Plan(plan_code="base_quarterly", name="Base (3 Months)", tier="base", price_paise=189900, duration_days=90, is_active=True),
+            Plan(plan_code="base_half_yearly", name="Base (6 Months)", tier="base", price_paise=349900, duration_days=195, is_active=True),
+            Plan(plan_code="base_yearly", name="Base (12 Months)", tier="base", price_paise=599900, duration_days=395, is_active=True),
+
+            Plan(plan_code="premium_monthly", name="Premium (Monthly)", tier="premium", price_paise=99900, duration_days=30, is_active=True),
+            Plan(plan_code="premium_quarterly", name="Premium (3 Months)", tier="premium", price_paise=269900, duration_days=90, is_active=True),
+            Plan(plan_code="premium_half_yearly", name="Premium (6 Months)", tier="premium", price_paise=499900, duration_days=195, is_active=True),
+            Plan(plan_code="premium_yearly", name="Premium (12 Months)", tier="premium", price_paise=849900, duration_days=395, is_active=True),
         ]
         for plan in defaults:
-            if plan.plan_code not in existing_codes:
+            if plan.plan_code not in existing:
                 db.add(plan)
         db.commit()
+
+        # Self-healing correction for the two plan_codes that pre-date the
+        # 2026-08-02 repricing (base_monthly used to be free-forever,
+        # premium_monthly was ₹299) — migration 0013 covers this too, but
+        # requiring a manual `alembic upgrade head` against a database this
+        # app can't always reach directly turned out to be a real deploy
+        # blocker. Doing the correction here as well means the fix lands on
+        # the very next app restart, no separate migration step required.
+        # Safe to run every boot: it's a no-op once the values already
+        # match, and never touches any plan_code outside this fixed pair.
+        legacy_fixes = {
+            "base_monthly": {"price_paise": 69900, "duration_days": 30},
+            "premium_monthly": {"price_paise": 99900},
+        }
+        changed = False
+        for code, expected in legacy_fixes.items():
+            plan = existing.get(code)
+            if plan is None:
+                continue
+            for field, value in expected.items():
+                if getattr(plan, field) != value:
+                    setattr(plan, field, value)
+                    changed = True
+        if changed:
+            db.commit()
     finally:
         db.close()
 

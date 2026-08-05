@@ -56,11 +56,19 @@ def validate_coupon_for_shop(db: Session, coupon_code: str, shop_id: int) -> Cou
     return coupon
 
 
-def compute_final_price(plan: Plan, coupon: Coupon | None) -> int:
-    """Returns amount_paise after discount, floored at 0. Never negative."""
+# Platform service charge and GST, applied on top of the (possibly
+# coupon-discounted) plan price. Both are fixed platform-wide rates, not
+# per-plan or per-coupon — change here if either ever needs to vary.
+SERVICE_CHARGE_PERCENT = 2.0
+GST_PERCENT = 18.0
+
+
+def _discounted_subtotal(plan: Plan, coupon: Coupon | None) -> tuple[int, int]:
+    """Returns (discount_amount_paise, subtotal_after_discount_paise).
+    Discount floored so the subtotal never goes negative."""
     price = plan.price_paise
     if coupon is None:
-        return price
+        return 0, price
 
     if coupon.discount_type == "percentage":
         discount = round(price * (coupon.discount_value / 100.0))
@@ -69,4 +77,39 @@ def compute_final_price(plan: Plan, coupon: Coupon | None) -> int:
     else:
         discount = 0
 
-    return max(price - discount, 0)
+    discount = min(discount, price)
+    return discount, price - discount
+
+
+def compute_final_price(plan: Plan, coupon: Coupon | None) -> int:
+    """Returns amount_paise after discount only (no service charge/GST) —
+    kept for callers that just need the discounted plan price itself."""
+    _, subtotal = _discounted_subtotal(plan, coupon)
+    return subtotal
+
+
+def compute_pricing_breakdown(plan: Plan, coupon: Coupon | None) -> dict:
+    """
+    Full charged-amount breakdown: plan price -> coupon discount ->
+    2% service charge -> 18% GST (service charge is added to the taxable
+    base before GST, matching how the service charge is itself a taxable
+    service fee) -> final amount. This is what actually gets charged via
+    Razorpay and stored on the Order row — the app's price summary must
+    always mirror these exact fields, never compute its own copy of this
+    math, so the displayed total can never drift from what's charged.
+    """
+    discount, subtotal = _discounted_subtotal(plan, coupon)
+
+    service_charge = round(subtotal * (SERVICE_CHARGE_PERCENT / 100.0))
+    taxable = subtotal + service_charge
+    gst = round(taxable * (GST_PERCENT / 100.0))
+    final = taxable + gst
+
+    return {
+        "original_amount_paise": plan.price_paise,
+        "discount_amount_paise": discount,
+        "subtotal_after_discount_paise": subtotal,
+        "service_charge_paise": service_charge,
+        "gst_paise": gst,
+        "final_amount_paise": final,
+    }
