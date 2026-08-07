@@ -88,27 +88,42 @@ def compute_final_price(plan: Plan, coupon: Coupon | None) -> int:
     return subtotal
 
 
-def compute_pricing_breakdown(plan: Plan, coupon: Coupon | None) -> dict:
+def compute_pricing_breakdown(plan: Plan, coupon: Coupon | None, credit_paise: int = 0) -> dict:
     """
     Full charged-amount breakdown: plan price -> coupon discount ->
-    2% service charge -> 18% GST (service charge is added to the taxable
-    base before GST, matching how the service charge is itself a taxable
-    service fee) -> final amount. This is what actually gets charged via
-    Razorpay and stored on the Order row — the app's price summary must
-    always mirror these exact fields, never compute its own copy of this
-    math, so the displayed total can never drift from what's charged.
+    upgrade credit -> 2% service charge -> 18% GST (service charge is
+    added to the taxable base before GST, matching how the service
+    charge is itself a taxable service fee) -> final amount. This is
+    what actually gets charged via Razorpay and stored on the Order
+    row — the app's price summary must always mirror these exact
+    fields, never compute its own copy of this math, so the displayed
+    total can never drift from what's charged.
+
+    BUG FIXED HERE: credit_paise (the shop's unused-time credit on a
+    Base->Premium upgrade, see
+    subscription_entitlement_service.compute_upgrade_credit_paise) used
+    to be subtracted from final_amount AFTER service charge and GST had
+    already been computed on the full, uncredited plan price — e.g. for
+    a ₹999 Premium plan with a ₹699 Base credit, service charge and GST
+    were being charged on the full ₹999 (giving ~₹1,202 pre-credit) and
+    only THEN was ₹699 subtracted, instead of taxing the correct ₹300
+    payable amount (₹999 - ₹699) to begin with. That produced a final
+    total roughly double what it should have been. credit_paise is now
+    subtracted from the subtotal BEFORE service charge/GST are computed,
+    so both are correctly calculated on the actual payable amount.
     """
     discount, subtotal = _discounted_subtotal(plan, coupon)
+    payable = max(0, subtotal - max(0, credit_paise))
 
-    service_charge = round(subtotal * (SERVICE_CHARGE_PERCENT / 100.0))
-    taxable = subtotal + service_charge
+    service_charge = round(payable * (SERVICE_CHARGE_PERCENT / 100.0))
+    taxable = payable + service_charge
     gst = round(taxable * (GST_PERCENT / 100.0))
     final = taxable + gst
 
     return {
         "original_amount_paise": plan.price_paise,
         "discount_amount_paise": discount,
-        "subtotal_after_discount_paise": subtotal,
+        "subtotal_after_discount_paise": payable,
         "service_charge_paise": service_charge,
         "gst_paise": gst,
         "final_amount_paise": final,

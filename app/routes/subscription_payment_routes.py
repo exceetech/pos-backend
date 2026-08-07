@@ -97,12 +97,12 @@ def validate_coupon(
     plan = get_active_plan(db, body.plan_code)
     coupon = validate_coupon_for_shop(db, body.coupon_code, current_shop.id)
 
-    breakdown = compute_pricing_breakdown(plan, coupon)
-    final_amount = breakdown["final_amount_paise"]
-
     # Preview the same upgrade credit create-order will actually apply,
     # so the coupon screen's total matches what create-order returns a
-    # moment later — never a separate/approximate calculation.
+    # moment later — never a separate/approximate calculation. Computed
+    # BEFORE compute_pricing_breakdown (bug fix — see that function's
+    # doc comment) so service charge/GST are taxed on the correct
+    # post-credit payable amount, not the full plan price.
     current_sub = (
         db.query(Subscription)
         .filter(Subscription.shop_id == current_shop.id)
@@ -114,7 +114,9 @@ def validate_coupon(
     _reject_if_downgrade(transition, current_sub)
     if transition == "upgrade":
         upgrade_credit = compute_upgrade_credit_paise(db, current_sub, plan)
-        final_amount = max(0, final_amount - upgrade_credit)
+
+    breakdown = compute_pricing_breakdown(plan, coupon, credit_paise=upgrade_credit)
+    final_amount = breakdown["final_amount_paise"]
 
     return ValidateCouponResponse(
         valid=True,
@@ -142,18 +144,10 @@ def create_order(
     if body.coupon_code:
         coupon = validate_coupon_for_shop(db, body.coupon_code, current_shop.id)
 
-    # Server-computed final price — the app never sends an amount. This
-    # now includes the 2% service charge and 18% GST on top of the
-    # (possibly coupon-discounted) plan price — see
-    # subscription_pricing_service.compute_pricing_breakdown for the
-    # exact math. final_amount is what actually gets charged.
-    breakdown = compute_pricing_breakdown(plan, coupon)
-    final_amount = breakdown["final_amount_paise"]
-
     # Entitlement classification — decides whether this purchase is a
     # fresh buy, a renewal, an upgrade, or a downgrade based on the
-    # shop's CURRENT subscription, and (for an upgrade) subtracts a
-    # credit for unused Base time off the amount actually charged. See
+    # shop's CURRENT subscription, and (for an upgrade) credits unused
+    # Base time toward the amount actually charged. See
     # subscription_entitlement_service.compute_upgrade_credit_paise —
     # the credit is based on what the shop actually paid last time
     # (Order.amount_paise), never the plan's list price, so a
@@ -170,7 +164,15 @@ def create_order(
     credit_applied = 0
     if transition == "upgrade":
         credit_applied = compute_upgrade_credit_paise(db, current_sub, plan)
-        final_amount = max(0, final_amount - credit_applied)
+
+    # Server-computed final price — the app never sends an amount.
+    # credit_applied is passed in BEFORE service charge/GST are computed
+    # (bug fix — see compute_pricing_breakdown's doc comment: this used
+    # to tax the full plan price and only subtract the credit from the
+    # final total afterward, roughly doubling the correct amount on an
+    # upgrade). final_amount is what actually gets charged.
+    breakdown = compute_pricing_breakdown(plan, coupon, credit_paise=credit_applied)
+    final_amount = breakdown["final_amount_paise"]
 
     # Sanity bounds (plan §6/§7) — cheap insurance against a bug or
     # tampering upstream (e.g. a malformed Plan row, or a future coupon
@@ -199,12 +201,24 @@ def create_order(
         .order_by(Order.created_at.desc())
         .first()
     )
-    if existing and existing.razorpay_order_id:
-        # Order.amount_paise already reflects the same breakdown (plan
-        # price + coupon + service charge + GST don't change between the
-        # original request and this retry), so it matches `breakdown`
-        # recomputed just above — reusing it here keeps the returned
-        # amount_paise consistent with what Razorpay was actually told.
+    # BUG FIXED HERE: this used to assume Order.amount_paise always still
+    # matched `breakdown` (recomputed fresh, just above) since "plan
+    # price + coupon + service charge + GST don't change between the
+    # original request and this retry" — true before upgrade credit
+    # existed, but credit_applied is now time-sensitive (it shrinks as
+    # remaining_days ticks down every second). Confirm-and-pay prefetches
+    # an order the moment the screen opens, then reuses it when Pay is
+    # tapped moments/minutes later — during that gap the reused order's
+    # actual amount_paise (what Razorpay was already told and will
+    # charge) could drift below a freshly recomputed breakdown (less
+    # elapsed time = more credit = lower total), while the OLD response
+    # still echoed back the NEW breakdown's subtotal/service/GST fields.
+    # That mismatch (app total ₹361.48 vs Razorpay's actual ₹361.08) is
+    # exactly what was reported. Only reuse the existing order when its
+    # stored amount still equals what breakdown says RIGHT NOW — anything
+    # else falls through and creates a brand-new, fully consistent order
+    # instead of returning stale-vs-fresh numbers together.
+    if existing and existing.razorpay_order_id and existing.amount_paise == final_amount:
         return CreateOrderResponse(
             order_db_id=existing.id,
             razorpay_order_id=existing.razorpay_order_id,

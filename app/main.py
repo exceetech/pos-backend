@@ -1136,6 +1136,14 @@ def _add_onboarding_and_subscription_tier_columns() -> None:
             cols = {c["name"] for c in insp.get_columns("subscriptions")}
             _add_column_if_missing(conn, "subscriptions", cols, "tier", "tier VARCHAR NULL")
             _add_column_if_missing(conn, "subscriptions", cols, "trial_started_at", "trial_started_at TIMESTAMP NULL")
+            # funding_order_id links a subscription period to the Order that
+            # paid for it — needed for upgrade-proration math (see model
+            # docstring in app/models/subscription.py). Added after the
+            # table was already in use elsewhere, so it must go through the
+            # same idempotent ALTER TABLE pattern as every other column
+            # here rather than relying on create_all() (which only creates
+            # brand-new tables, never alters existing ones).
+            _add_column_if_missing(conn, "subscriptions", cols, "funding_order_id", "funding_order_id INTEGER NULL REFERENCES orders(id)")
             conn.commit()
 
             # Backfill: any existing subscription row without a tier is

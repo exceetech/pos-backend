@@ -26,17 +26,35 @@ branch_labels = None
 depends_on = None
 
 
+def _has_column(table_name: str, column_name: str) -> bool:
+    bind = op.get_bind()
+    inspector = sa.inspect(bind)
+    return column_name in {c["name"] for c in inspector.get_columns(table_name)}
+
+
 def upgrade():
-    op.add_column(
-        "subscriptions",
-        sa.Column("funding_order_id", sa.Integer(), sa.ForeignKey("orders.id"), nullable=True),
-    )
-    op.add_column(
-        "orders",
-        sa.Column("order_type", sa.String(), nullable=True),
-    )
+    # Guarded rather than a flat add_column: a prior partial run (or manual
+    # fix) can leave one of these two columns already in place. Postgres DDL
+    # is transactional, so the original unconditional version failed and
+    # rolled back BOTH columns the moment it hit whichever one already
+    # existed — meaning the other, still-missing column never got added
+    # either, and alembic_version stayed on 0013 forever. Checking first
+    # makes this migration re-runnable regardless of which column (if any)
+    # is already there.
+    if not _has_column("subscriptions", "funding_order_id"):
+        op.add_column(
+            "subscriptions",
+            sa.Column("funding_order_id", sa.Integer(), sa.ForeignKey("orders.id"), nullable=True),
+        )
+    if not _has_column("orders", "order_type"):
+        op.add_column(
+            "orders",
+            sa.Column("order_type", sa.String(), nullable=True),
+        )
 
 
 def downgrade():
-    op.drop_column("orders", "order_type")
-    op.drop_column("subscriptions", "funding_order_id")
+    if _has_column("orders", "order_type"):
+        op.drop_column("orders", "order_type")
+    if _has_column("subscriptions", "funding_order_id"):
+        op.drop_column("subscriptions", "funding_order_id")

@@ -112,10 +112,25 @@ def classify_transition(sub: Optional[Subscription], new_plan: Plan, is_trial: b
 def compute_upgrade_credit_paise(db: Session, sub: Optional[Subscription], new_plan: Plan) -> int:
     """
     Paise to subtract from an upgrade purchase's price for the shop's
-    unused time on their current plan. Based on what the shop ACTUALLY
-    PAID for their current period (Subscription.funding_order_id ->
-    Order.amount_paise) — never Plan.price_paise — so a coupon-
-    discounted original purchase can never produce an inflated credit.
+    unused time on their current plan: (old_plan.price_paise /
+    old_plan.duration_days) * remaining_days.
+
+    BUG FIXED HERE: this used to prorate off Order.amount_paise (what
+    the shop's funding order actually CHARGED, i.e. plan price + 2%
+    service charge + 18% GST already baked in) instead of the plan's
+    own price. That double-counted tax into the credit — e.g. a ₹699
+    Base plan with almost the full period left produced a ~₹839 credit
+    (₹699 x 1.02 x 1.18 ≈ ₹841.32, prorated) instead of the correct
+    ~₹699, because it was crediting back tax that create_order's own
+    breakdown was going to apply fresh on top of the new plan anyway.
+    Now uses old_plan.price_paise — the plan's list price alone, no
+    service charge/GST folded in — so the credit and the fresh tax
+    computed in compute_pricing_breakdown() never overlap.
+
+    The funding Order row is still looked up and required to exist with
+    status="paid" — that's kept purely as a validity guard (the shop
+    must have an actual completed purchase behind this subscription),
+    not as the amount source.
 
     Always returns a value in [0, new_plan.price_paise]; never raises.
     Falls back to 0 for every case where a real credit can't be safely
@@ -143,12 +158,12 @@ def compute_upgrade_credit_paise(db: Session, sub: Optional[Subscription], new_p
         return 0
 
     old_plan = db.query(Plan).filter(Plan.plan_code == order.plan_code).first()
-    if old_plan is None or not old_plan.duration_days:
+    if old_plan is None or not old_plan.duration_days or old_plan.price_paise <= 0:
         return 0
 
     remaining_days = remaining_seconds / 86400.0
     fraction = min(1.0, remaining_days / old_plan.duration_days)
-    credit = round(fraction * order.amount_paise)
+    credit = round(fraction * old_plan.price_paise)
 
     # Never let the credit exceed the new plan's own price — an
     # unused-time credit must reduce a purchase toward zero, not make it
