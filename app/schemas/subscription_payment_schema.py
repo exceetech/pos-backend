@@ -74,3 +74,28 @@ class SubscriptionActionResponse(BaseModel):
     tier: Optional[str] = None
     plan: Optional[str] = None
     expiry_date: Optional[str] = None
+
+
+# ── Admin-only — coupon management, no Android client mirror needed ────────
+
+class AdminCreateCouponRequest(BaseModel):
+    code: str
+    discount_type: str  # percentage | flat
+    discount_value: float
+    valid_from: Optional[str] = None   # ISO datetime/date string
+    valid_until: Optional[str] = None  # ISO datetime/date string
+    max_uses: Optional[int] = None
+    max_uses_per_shop: int = 1
+
+
+class AdminCouponOut(BaseModel):
+    id: int
+    code: str
+    discount_type: str
+    discount_value: float
+    valid_from: Optional[str] = None
+    valid_until: Optional[str] = None
+    max_uses: Optional[int] = None
+    times_used: int
+    max_uses_per_shop: int
+    is_active: bool

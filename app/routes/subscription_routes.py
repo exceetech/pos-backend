@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from datetime import datetime, timedelta
 import math
@@ -8,6 +8,7 @@ from app.database import get_db
 from app.dependencies import get_current_shop, get_current_shop_no_subscription, require_admin
 from app.models.subscription import Subscription
 from app.models.order import Order
+from app.models.coupon import Coupon
 
 from app.models.shop import Shop
 from app.services.email_service import send_subscription_email
@@ -16,6 +17,7 @@ from app.services.subscription_entitlement_service import (
     is_trial_offerable, resolve_entitlement_state, apply_transition,
 )
 from app.models.plan import Plan
+from app.schemas.subscription_payment_schema import AdminCreateCouponRequest, AdminCouponOut
 
 router = APIRouter(prefix="/subscription", tags=["Subscription"])
 
@@ -234,3 +236,88 @@ def admin_refund_order(
     return {
         "message": f"Order {order_id} marked refunded; shop {order.shop_id}'s subscription expired",
     }
+
+
+# ── Coupon management ────────────────────────────────────────────────────
+# No admin endpoint existed for this until now — Plan rows are auto-seeded
+# on every restart (see main.py _seed_default_plans), but Coupon has no
+# equivalent seeding, and until this endpoint the only way to add one was
+# a raw INSERT against the coupons table. discount_type/discount_value/
+# valid_from/valid_until/max_uses/max_uses_per_shop map 1:1 onto the
+# Coupon model fields that subscription_pricing_service.validate_coupon_for_shop
+# actually checks — see that function for the exact validation semantics
+# each field drives (percentage vs flat, global vs per-shop cap, etc.).
+
+def _parse_optional_datetime(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(value)
+    except ValueError:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid date/time format: {value!r} — use ISO format, e.g. '2026-12-31' or '2026-12-31T23:59:59'",
+        )
+
+
+@router.post("/admin/coupons", dependencies=[Depends(require_admin)])
+def admin_create_coupon(body: AdminCreateCouponRequest, db: Session = Depends(get_db)):
+    if body.discount_type not in ("percentage", "flat"):
+        raise HTTPException(status_code=400, detail="discount_type must be 'percentage' or 'flat'")
+
+    code = body.code.strip().upper()
+    existing = db.query(Coupon).filter(Coupon.code == code).first()
+    if existing:
+        raise HTTPException(status_code=400, detail="A coupon with this code already exists")
+
+    coupon = Coupon(
+        code=code,
+        discount_type=body.discount_type,
+        discount_value=body.discount_value,
+        valid_from=_parse_optional_datetime(body.valid_from),
+        valid_until=_parse_optional_datetime(body.valid_until),
+        max_uses=body.max_uses,
+        max_uses_per_shop=body.max_uses_per_shop,
+        is_active=True,
+    )
+    db.add(coupon)
+    db.commit()
+    db.refresh(coupon)
+
+    log_event(db, None, "admin_coupon_created", f"code={code} discount_type={body.discount_type} discount_value={body.discount_value}")
+
+    return {"message": f"Coupon {code} created", "id": coupon.id}
+
+
+@router.get("/admin/coupons", response_model=list[AdminCouponOut], dependencies=[Depends(require_admin)])
+def admin_list_coupons(db: Session = Depends(get_db)):
+    coupons = db.query(Coupon).order_by(Coupon.id.desc()).all()
+    return [
+        AdminCouponOut(
+            id=c.id,
+            code=c.code,
+            discount_type=c.discount_type,
+            discount_value=c.discount_value,
+            valid_from=c.valid_from.isoformat() if c.valid_from else None,
+            valid_until=c.valid_until.isoformat() if c.valid_until else None,
+            max_uses=c.max_uses,
+            times_used=c.times_used,
+            max_uses_per_shop=c.max_uses_per_shop,
+            is_active=c.is_active,
+        )
+        for c in coupons
+    ]
+
+
+@router.post("/admin/coupons/{coupon_id}/deactivate", dependencies=[Depends(require_admin)])
+def admin_deactivate_coupon(coupon_id: int, db: Session = Depends(get_db)):
+    coupon = db.query(Coupon).filter(Coupon.id == coupon_id).first()
+    if not coupon:
+        raise HTTPException(status_code=404, detail="Coupon not found")
+
+    coupon.is_active = False
+    db.commit()
+
+    log_event(db, None, "admin_coupon_deactivated", f"code={coupon.code}")
+
+    return {"message": f"Coupon {coupon.code} deactivated"}

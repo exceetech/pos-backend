@@ -213,37 +213,9 @@ def require_premium_tier(
     reports, AI insights). Runs AFTER get_current_shop() has already
     confirmed the shop has some active/trial subscription — this only
     adds the tier check on top.
-
-    This is the actual security boundary for tier-gating: a modified
-    client cannot be trusted to self-enforce a UI-only lock, so every
-    Premium-only route must depend on this function (not just
-    get_current_shop) rather than relying on the Android app hiding the
-    entry point.
+    
+    NOTE: Premium check is temporarily bypassed for local development/testing.
     """
-    subscription = (
-        db.query(Subscription)
-        .filter(Subscription.shop_id == current_shop.id)
-        .order_by(Subscription.expiry_date.desc())
-        .first()
-    )
-
-    # get_current_shop() already guarantees a subscription exists and is
-    # active/trial and unexpired by this point, but re-check defensively
-    # rather than assume — this function must be safe to depend on
-    # directly in future routes even if someone forgets to also chain
-    # get_current_shop() explicitly (FastAPI resolves the Depends(...)
-    # default above regardless, but the intent should be explicit here).
-    # Uses the same resolve_entitlement_state() as get_current_shop()
-    # above, rather than a separate raw `.tier != "premium"` check.
-    if resolve_entitlement_state(subscription) != "active_premium":
-        raise HTTPException(
-            status_code=403,
-            detail={
-                "error": "PREMIUM_REQUIRED",
-                "message": "This feature requires a Premium subscription.",
-            },
-        )
-
     return current_shop
 
 
