@@ -181,12 +181,12 @@ def create_bill(
     from sqlalchemy.dialects.postgresql import INTEGER as PG_INTEGER
 
     current_year = str(local_now().year)  # H6: app-timezone year, not server clock
-    prefix = f"INV_{current_year}_"
+    prefix = f"INV-{current_year}-"
 
     max_suffix = db.query(
         func.max(
             sa_cast(
-                func.split_part(Bill.bill_number, "_", 3),
+                func.split_part(Bill.bill_number, "-", 3),
                 PG_INTEGER
             )
         )
