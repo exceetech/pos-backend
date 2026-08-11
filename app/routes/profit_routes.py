@@ -164,8 +164,8 @@ def get_profit(
             }
 
         qty_returned = r.quantity_returned
-        rev_returned = float(r.total_amount)       # Gross Revenue returned
-        cost_returned = float(r.cost_price_used)   # Net Cost returned
+        rev_returned = float(r.taxable_value)      # Net Revenue returned (fixes double-tax mismatch)
+        cost_returned = float(r.cost_price_used)   # Gross Cost returned
 
         product_map[pid]["qty"] -= qty_returned
         product_map[pid]["revenue"] -= rev_returned
@@ -229,8 +229,8 @@ def get_profit(
             }
 
         qty_debited = d.quantity_returned          # same column, reused for debited qty
-        rev_debited = float(d.total_amount)
-        cost_debited = float(d.cost_price_used)
+        rev_debited = float(d.taxable_value)       # Net Revenue
+        cost_debited = float(d.cost_price_used)    # Gross Cost
 
         product_map[pid]["qty"] += qty_debited
         product_map[pid]["revenue"] += rev_debited
@@ -335,8 +335,6 @@ def get_profit(
         # unused by any current write path.
         purchase_return_qty = sum(l.quantity for l in logs if l.type in ("RETURN", "PURCHASE_RETURN"))
 
-        added += restock_qty
-
         sold = product_map[pid]["qty"]
 
         # Audit Round 2, ADJUST fix (2026-07-23): a manual stock-count
@@ -361,6 +359,7 @@ def get_profit(
             post_restock = sum(l.quantity for l in logs if l.type == "CANCEL_RESTOCK" and l.created_at > anchor_time)
             post_loss_qty = sum(l.quantity for l in logs if l.type == "LOSS" and l.created_at > anchor_time)
             post_return_qty = sum(l.quantity for l in logs if l.type in ("RETURN", "PURCHASE_RETURN") and l.created_at > anchor_time)
+            post_sales_return = sum(l.quantity for l in logs if l.type == "SALES_RETURN" and l.created_at > anchor_time)
 
             # "sold" above is the WHOLE period's sold quantity (correct for
             # revenue/cost/profit, which must never be truncated) — but
@@ -375,9 +374,9 @@ def get_profit(
                 post_sold_query = post_sold_query.filter(SaleItem.created_at < end)
             post_sold = post_sold_query.scalar() or 0.0
 
-            remaining = anchor_qty + post_add + post_restock - post_sold - post_loss_qty - post_return_qty
+            remaining = anchor_qty + post_add + post_restock + post_sales_return - post_sold - post_loss_qty - post_return_qty
         else:
-            remaining = added - sold - loss_qty - purchase_return_qty
+            remaining = added + restock_qty - sold - loss_qty - purchase_return_qty
 
         product_map[pid]["added"] = added
         product_map[pid]["sold"] = sold
