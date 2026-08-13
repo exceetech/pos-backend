@@ -36,6 +36,7 @@ from app.routes.gst_sales_invoice_routes import router as gst_sales_invoice_rout
 from app.routes.purchase_batch_routes import router as purchase_batch_router
 from app.routes.credit_note_routes import router as credit_note_router
 from app.routes.user_event_log_routes import router as user_event_log_router
+from app.routes.diagnostic_report_routes import router as diagnostic_report_router
 
 
 
@@ -209,6 +210,7 @@ app.include_router(gst_sales_invoice_router)
 app.include_router(purchase_batch_router)
 app.include_router(credit_note_router)
 app.include_router(user_event_log_router)
+app.include_router(diagnostic_report_router)
 from app.routes.purchase_import_details_routes import router as purchase_import_details_router
 app.include_router(purchase_import_details_router)
 from app.routes.import_service_routes import router as import_service_router
@@ -282,6 +284,15 @@ def run_event_log_cleanup():
         db.close()
 
 
+def run_diagnostic_report_cleanup():
+    from app.services.diagnostic_report_cleanup_service import cleanup_old_diagnostic_reports
+    db = SessionLocal()
+    try:
+        cleanup_old_diagnostic_reports(db)
+    finally:
+        db.close()
+
+
 # ⏰ Runs every 24 hours
 scheduler.add_job(run_expiry_check, "interval", hours=24)
 # ⏰ Order reconciliation (plan §6.4/§9) — checks Razorpay orders stuck
@@ -293,6 +304,11 @@ scheduler.add_job(run_order_reconciliation, "interval", minutes=15)
 # days (RETENTION_DAYS in event_log_cleanup_service.py). Same cadence as
 # the expiry check since this is routine housekeeping, not time-sensitive.
 scheduler.add_job(run_event_log_cleanup, "interval", hours=24)
+# ⏰ diagnostic_reports retention — deletes on-demand full-trail uploads
+# older than 14 days (RETENTION_DAYS in diagnostic_report_cleanup_service.py).
+# Much shorter than user_event_logs since a report is only useful while a
+# specific investigation is active.
+scheduler.add_job(run_diagnostic_report_cleanup, "interval", hours=24)
 scheduler.start()
 
 
