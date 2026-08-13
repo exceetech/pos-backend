@@ -11,8 +11,7 @@ from datetime import datetime, timedelta, date
 
 
 from fastapi_mail import FastMail, MessageSchema
-from fastapi import Depends, HTTPException
-from app.dependencies import get_current_shop
+from fastapi import HTTPException
 
 from app.database import get_db
 from app.dependencies import get_current_shop
@@ -22,10 +21,6 @@ from app.core.config import mail_config
 from app.util.report_generator import generate_report_pdf
 from app.util.time_utils import local_now, local_today, APP_TZ
 from app.models.credit_note import CreditNote, CreditNoteItem
-
-
-from app.models.shop_products import ShopProduct
-from app.models.global_products import GlobalProduct
 
 SHOP_WEIGHTS = {
 
@@ -795,9 +790,6 @@ def sales_trend(db: Session = Depends(get_db), current_shop=Depends(get_current_
     ]
 
 # ================= TODAY'S HOURLY SALES =================
-
-from datetime import date
-from sqlalchemy import func
 
 @router.get("/today-hourly")
 def today_hourly_sales(

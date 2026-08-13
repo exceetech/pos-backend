@@ -195,7 +195,6 @@ def create_bill(
     ).scalar()
 
     next_num = (max_suffix or 0) + 1
-    next_bill_number = f"{prefix}{next_num}"
 
     new_bill_number = f"{prefix}{next_num}"
     

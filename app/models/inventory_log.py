@@ -8,8 +8,10 @@ class InventoryLog(Base):
 
     id = Column(Integer, primary_key=True)
 
-    shop_id = Column(Integer, ForeignKey("shops.id"), nullable=False)
-    product_id = Column(Integer, ForeignKey("shop_products.id"), nullable=False)
+    # Indexed — inventory history/report queries filter by shop and by
+    # product constantly (stock ledger per product, per-shop activity feed).
+    shop_id = Column(Integer, ForeignKey("shops.id"), nullable=False, index=True)
+    product_id = Column(Integer, ForeignKey("shop_products.id"), nullable=False, index=True)
 
     type = Column(String, nullable=False)  # ADD, SALE, LOSS, RETURN, PURCHASE_RETURN, ADJUST, CANCEL_RESTOCK
 

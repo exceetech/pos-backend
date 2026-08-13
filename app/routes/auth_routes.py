@@ -5,25 +5,19 @@ from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy.orm import Session
 
 from app.database import get_db
-from app.models import shop
 from app.models.shop import Shop
-from app.schemas.shop_schema import ShopRegister, ShopActivate, ForgotPasswordRequest
+from app.schemas.shop_schema import ShopRegister, ForgotPasswordRequest
 from app.security import verify_password, hash_password, create_access_token
-from app.security import create_access_token
-from app.services.email_service import send_registration_emails
 from app.dependencies import get_current_shop, get_current_shop_no_subscription, require_admin
 from app.services.app_config_service import get_config, get_config_bool
 import secrets
 import hashlib
-from datetime import datetime, timedelta
+from datetime import timedelta
 from app.util.time_utils import utc_now
 from app.services.email_service import send_otp_email
 
 from fastapi import Header
 from app.security import decode_token
-from app.schemas.security_schema import ChangePasswordRequest
-
-from app.security import decode_token, hash_password
 from app.schemas.security_schema import ChangePasswordRequest
 
 

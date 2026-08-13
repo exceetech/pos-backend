@@ -249,16 +249,23 @@ def sync_gst_sales_invoices(
     """
     response = GstSalesSyncBatchResponse()
 
+    # Batch-fetch every existing invoice this payload could touch in one
+    # query instead of one SELECT per invoice (N+1) — an offline shop
+    # replaying a backlog can send hundreds of invoices in one sync call.
+    local_ids = [inv_dto.local_id for inv_dto in payload.invoices]
+    existing_by_local_id = {
+        row.local_id: row
+        for row in db.query(GstSalesInvoice)
+        .filter(
+            GstSalesInvoice.shop_id == current_shop.id,
+            GstSalesInvoice.local_id.in_(local_ids),
+        )
+        .all()
+    } if local_ids else {}
+
     for inv_dto in payload.invoices:
         try:
-            existing = (
-                db.query(GstSalesInvoice)
-                  .filter(
-                      GstSalesInvoice.shop_id  == current_shop.id,
-                      GstSalesInvoice.local_id == inv_dto.local_id,
-                  )
-                  .first()
-            )
+            existing = existing_by_local_id.get(inv_dto.local_id)
 
             if existing is not None:
                 # Replace fields and rewrite line items.

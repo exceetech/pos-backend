@@ -182,10 +182,20 @@ def sync_gst_purchase_records(
     synced = 0
     skipped = 0
 
+    # Batch-fetch every existing row this payload could touch in one
+    # query instead of one SELECT per record (N+1) — a shop syncing after
+    # being offline a while can easily send hundreds of records, and this
+    # used to be hundreds of individual round-trips to the database.
+    record_ids = [rec.id for rec in payload.records]
+    existing_by_id = {
+        row.id: row
+        for row in db.query(GstPurchaseRecord)
+        .filter(GstPurchaseRecord.id.in_(record_ids))
+        .all()
+    } if record_ids else {}
+
     for rec in payload.records:
-        existing = db.query(GstPurchaseRecord).filter(
-            GstPurchaseRecord.id == rec.id
-        ).first()
+        existing = existing_by_id.get(rec.id)
 
         if existing:
             incoming_ts = rec.updated_at or utc_now()

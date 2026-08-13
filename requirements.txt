@@ -17,7 +17,6 @@ ollama
 groq
 apscheduler
 gunicorn
-postgresql
 alembic
 httpx
 razorpay

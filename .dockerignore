@@ -1,0 +1,26 @@
+# Local virtualenv — never belongs in the image; the Dockerfile
+# installs fresh dependencies from requirements.txt instead.
+myenv/
+__pycache__/
+*.pyc
+
+# Secrets — must NEVER be baked into the image (anyone who can pull the
+# image can read everything inside it, including old layers). These get
+# provided to the running container separately (env vars / mounted
+# secrets on Cloud Run), not copied in at build time.
+app/.env
+app/firebase-key.json
+*.env
+
+# Local SQLite databases used only for scratch/dev testing — not the
+# real production database (that's Cloud SQL, reached via DATABASE_URL).
+*.db
+
+# Version control and editor metadata — irrelevant inside the container.
+.git/
+.gitignore
+.DS_Store
+
+# One-off local scripts not needed at runtime.
+scripts/
+tests/

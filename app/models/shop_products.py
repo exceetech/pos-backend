@@ -8,8 +8,10 @@ class ShopProduct(Base):
     )
 
     id = Column(Integer, primary_key=True)
-    shop_id = Column(Integer, ForeignKey("shops.id"), nullable=False)
-    global_product_id = Column(Integer, ForeignKey("global_products.id"), nullable=False)
+    # Indexed — every product-related request is scoped by shop_id, and this
+    # is one of the most heavily-queried tables in the app.
+    shop_id = Column(Integer, ForeignKey("shops.id"), nullable=False, index=True)
+    global_product_id = Column(Integer, ForeignKey("global_products.id"), nullable=False, index=True)
 
     variant_name = Column(String, nullable=True)
     unit = Column(String, default="unit")

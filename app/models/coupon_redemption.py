@@ -16,8 +16,10 @@ class CouponRedemption(Base):
 
     id = Column(Integer, primary_key=True, index=True)
 
-    coupon_id = Column(Integer, ForeignKey("coupons.id"), nullable=False)
-    shop_id = Column(Integer, ForeignKey("shops.id"), nullable=False)
+    # Indexed — validate_coupon_for_shop() counts rows filtered by both of
+    # these on every coupon validation (global usage cap + per-shop cap).
+    coupon_id = Column(Integer, ForeignKey("coupons.id"), nullable=False, index=True)
+    shop_id = Column(Integer, ForeignKey("shops.id"), nullable=False, index=True)
     order_id = Column(Integer, ForeignKey("orders.id"), nullable=False)
 
     redeemed_at = Column(DateTime, default=utc_now)  # Bucket B, see order.py

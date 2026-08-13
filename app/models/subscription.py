@@ -7,7 +7,9 @@ class Subscription(Base):
 
     id = Column(Integer, primary_key=True, index=True)
 
-    shop_id = Column(Integer, ForeignKey("shops.id"))
+    # Every subscription lookup filters by shop_id (get_active_subscription
+    # etc.), so this is a hot lookup path worth indexing.
+    shop_id = Column(Integer, ForeignKey("shops.id"), index=True)
 
     plan = Column(String)  # plan_code, e.g. base_monthly / premium_monthly
 

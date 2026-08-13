@@ -28,7 +28,8 @@ class GlobalProductVariant(Base):
     # other shops. The statutory tax fields are national facts and are
     # safe to share once verified. NOTE: price is intentionally NOT
     # stored here — it is per-shop and must never be cross-filled.
-    created_by_shop_id = Column(Integer, ForeignKey("shops.id"), nullable=True)
+    # Indexed — the "verified OR mine" filter queries this per shop.
+    created_by_shop_id = Column(Integer, ForeignKey("shops.id"), nullable=True, index=True)
 
     hsn_code = Column(String, nullable=True)
     hsn_description = Column(String, nullable=True)

@@ -7,7 +7,12 @@ class Inventory(Base):
     __tablename__ = "inventory"
 
     product_id = Column(Integer, ForeignKey("shop_products.id"), primary_key=True)
-    shop_id = Column(Integer, ForeignKey("shops.id"), primary_key=True)
+    # Also part of the composite primary key (so it's already indexed as
+    # the PK's second column), but explicitly indexed too — queries that
+    # filter by shop_id alone (e.g. "list this shop's whole inventory")
+    # don't benefit from a composite index unless the filtered column is
+    # its leading member, which shop_id isn't here.
+    shop_id = Column(Integer, ForeignKey("shops.id"), primary_key=True, index=True)
 
     current_stock = Column(Float, default=0.0)
     average_cost = Column(Float, default=0.0)
