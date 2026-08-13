@@ -9,6 +9,7 @@ __pycache__/
 # provided to the running container separately (env vars / mounted
 # secrets on Cloud Run), not copied in at build time.
 app/.env
+app/.env.docker
 app/firebase-key.json
 *.env
 
