@@ -33,6 +33,7 @@ from .order import Order
 from .processed_webhook_event import ProcessedWebhookEvent
 from .app_config import AppConfig
 from .audit_log import AuditLog
+from .user_event_log import UserEventLog
 
 __all__ = [
     "Bill",
@@ -66,4 +67,5 @@ __all__ = [
     "ProcessedWebhookEvent",
     "AppConfig",
     "AuditLog",
+    "UserEventLog",
 ]

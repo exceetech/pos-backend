@@ -35,6 +35,7 @@ from app.routes.scrap_routes import router as scrap_router
 from app.routes.gst_sales_invoice_routes import router as gst_sales_invoice_router
 from app.routes.purchase_batch_routes import router as purchase_batch_router
 from app.routes.credit_note_routes import router as credit_note_router
+from app.routes.user_event_log_routes import router as user_event_log_router
 
 
 
@@ -207,6 +208,7 @@ app.include_router(scrap_router)
 app.include_router(gst_sales_invoice_router)
 app.include_router(purchase_batch_router)
 app.include_router(credit_note_router)
+app.include_router(user_event_log_router)
 from app.routes.purchase_import_details_routes import router as purchase_import_details_router
 app.include_router(purchase_import_details_router)
 from app.routes.import_service_routes import router as import_service_router
@@ -271,6 +273,15 @@ def run_order_reconciliation():
         db.close()
 
 
+def run_event_log_cleanup():
+    from app.services.event_log_cleanup_service import cleanup_old_user_events
+    db = SessionLocal()
+    try:
+        cleanup_old_user_events(db)
+    finally:
+        db.close()
+
+
 # ⏰ Runs every 24 hours
 scheduler.add_job(run_expiry_check, "interval", hours=24)
 # ⏰ Order reconciliation (plan §6.4/§9) — checks Razorpay orders stuck
@@ -278,6 +289,10 @@ scheduler.add_job(run_expiry_check, "interval", hours=24)
 # frequently than the expiry check since this is real money potentially
 # sitting unresolved, not a routine status sweep.
 scheduler.add_job(run_order_reconciliation, "interval", minutes=15)
+# ⏰ user_event_logs retention — deletes breadcrumb rows older than 90
+# days (RETENTION_DAYS in event_log_cleanup_service.py). Same cadence as
+# the expiry check since this is routine housekeeping, not time-sensitive.
+scheduler.add_job(run_event_log_cleanup, "interval", hours=24)
 scheduler.start()
 
 
