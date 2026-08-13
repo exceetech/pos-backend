@@ -774,10 +774,30 @@ def generate_structured_insights(db: Session, shop_id: int):
     if woken_up and len(woken_up) > 0:
         woken_product = db.query(ShopProduct).filter(ShopProduct.id == list(woken_up)[0]).first()
         if woken_product:
+            # product_name pulled from today's matching BillItem row (same
+            # source every other insight in this file reads from) — the
+            # ShopProduct row itself has no name column, only variant_name,
+            # which used to be shown alone here ('Red' instead of 'T-Shirt
+            # (Red)'). Fall back to variant_name only if no BillItem name is
+            # found, and only append the variant in parentheses when it's
+            # actually different text, matching the display convention used
+            # across the rest of the app (e.g. ProfitActivity).
+            woken_bill_item = (
+                db.query(BillItem)
+                .filter(BillItem.shop_product_id == woken_product.id)
+                .order_by(BillItem.id.desc())
+                .first()
+            )
+            base_name = (woken_bill_item.product_name if woken_bill_item else None) or woken_product.variant_name
+            if woken_product.variant_name and woken_product.variant_name != base_name:
+                display_name = f"{base_name} ({woken_product.variant_name})"
+            else:
+                display_name = base_name
+
             insights.append({
                 "type": "gold",
                 "title": "Dormant Product Waking Up",
-                "description": f"'{woken_product.variant_name}' suddenly sold today after 30 days of zero sales.",
+                "description": f"'{display_name}' suddenly sold today after 30 days of zero sales.",
                 "actionText": "View Inventory",
                 "actionType": "VIEW_INVENTORY"
             })
