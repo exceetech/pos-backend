@@ -1,3 +1,4 @@
+import logging
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from datetime import datetime, timedelta
@@ -20,6 +21,7 @@ from app.models.plan import Plan
 from app.schemas.subscription_payment_schema import AdminCreateCouponRequest, AdminCouponOut
 
 router = APIRouter(prefix="/subscription", tags=["Subscription"])
+logger = logging.getLogger(__name__)
 
 
 # ================= USER =================
@@ -149,9 +151,9 @@ def admin_activate_subscription(
     # ================= EMAIL (NEW) =================
     try:
         send_subscription_email(shop, plan, expiry)
-        print("✅ Email sent successfully")
+        logger.info("Subscription activation email sent to shop_id=%s", shop_id)
     except Exception as e:
-        print("❌ Email failed:", e)
+        logger.error("Subscription activation email failed for shop_id=%s: %s", shop_id, e)
 
     return {
         "message": f"Activated for shop {shop_id}",

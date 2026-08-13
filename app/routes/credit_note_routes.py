@@ -23,6 +23,7 @@ Architecture contract:
 
 from __future__ import annotations
 
+import logging
 from datetime import datetime
 from app.util.time_utils import epoch_ms_to_local, epoch_ms_to_utc, local_now, utc_now
 from typing import List
@@ -42,6 +43,7 @@ from app.schemas.credit_note_schema import (
 )
 
 router = APIRouter(prefix="/credit-notes", tags=["Credit Notes"])
+logger = logging.getLogger(__name__)
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -233,7 +235,7 @@ def sync_credit_notes(
             # before it can be used again — otherwise every note later in
             # the same batch, even perfectly valid ones, would also fail.
             db.rollback()
-            print(f"[credit-notes/sync] local_id={dto.local_id} failed: {exc}")
+            logger.error("[credit-notes/sync] local_id=%s failed: %s", dto.local_id, exc)
             response.failed.append({"local_id": dto.local_id, "reason": str(exc)})
     response.message = f"{response.success_count}/{len(payload.credit_notes)} accepted"
     return response

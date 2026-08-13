@@ -1,6 +1,14 @@
-from fastapi import FastAPI
+import os
+from app import logging_config  # noqa: F401 — sets up logging.basicConfig before anything else logs
+import logging
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from app.database import engine, Base
+from app.database import engine, Base, SessionLocal
+from sqlalchemy import text
+from slowapi.errors import RateLimitExceeded
+from slowapi import _rate_limit_exceeded_handler
+from slowapi.middleware import SlowAPIMiddleware
+from app.rate_limit import limiter
 
 from app.models import *
 
@@ -31,7 +39,6 @@ from app.routes.credit_note_routes import router as credit_note_router
 
 
 from apscheduler.schedulers.background import BackgroundScheduler
-from app.database import SessionLocal
 from app.services.expiry_service import check_subscriptions
 from app.routes import credit_routes as credit
 
@@ -44,10 +51,40 @@ app = FastAPI(
     version="1.0.0"
 )
 
+# Rate limiting (slowapi) — protects the auth endpoints (login, OTP
+# request/verify, forgot-password) from brute-force/abuse now that this
+# is reachable from the public internet instead of just the home
+# network. Individual limits are set per-route in auth_routes.py via
+# @limiter.limit(...); this just wires the shared Limiter instance
+# (app/rate_limit.py) into the app and defines what happens when a
+# limit is hit (429, not an unhandled exception).
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+app.add_middleware(SlowAPIMiddleware)
+
 # CORS
+# CORS_ALLOWED_ORIGINS is a comma-separated list of exact origins, e.g.
+# "https://app.example.com,https://admin.example.com". If unset (typical
+# for local dev), we fall back to "*" but print a loud warning — this
+# app is served to a mobile client, not a browser, so allow_origins="*"
+# is low-risk here, but it should still be pinned down before any
+# browser-based admin/dashboard surface is added.
+logger = logging.getLogger(__name__)
+
+_cors_env = os.getenv("CORS_ALLOWED_ORIGINS", "").strip()
+if _cors_env:
+    _cors_origins = [o.strip() for o in _cors_env.split(",") if o.strip()]
+else:
+    _cors_origins = ["*"]
+    logger.warning(
+        "CORS_ALLOWED_ORIGINS is not set — falling back to allow_origins=['*']. "
+        "Set CORS_ALLOWED_ORIGINS before hosting this behind a public URL that "
+        "browsers can reach."
+    )
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=_cors_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -142,7 +179,7 @@ def _seed_default_plans() -> None:
 try:
     _seed_default_plans()
 except Exception as e:  # pragma: no cover
-    print(f"[startup] default plan seeding skipped: {e}")
+    logger.warning("default plan seeding skipped: %s", e)
 
 
 # Routers
@@ -194,6 +231,28 @@ def get_units():
 @app.get("/")
 def root():
     return {"message": "POS Backend Running Successfully!"}
+
+
+# Health check — Cloud Run (and any other platform-level uptime probe)
+# hits this to decide whether to route traffic to an instance. Verifies
+# the DB connection actually works, not just that the process is alive:
+# a container can boot fine and still be unable to reach Cloud SQL (bad
+# credentials, VPC connector misconfigured, DB paused), and a bare 200
+# with no DB check would mask exactly that failure mode.
+@app.get("/health")
+def health_check():
+    db = SessionLocal()
+    try:
+        db.execute(text("SELECT 1"))
+        return {"status": "ok", "database": "connected"}
+    except Exception as e:
+        # Non-2xx so the platform's health probe actually treats this as
+        # unhealthy — a 200 with an "error" body in it would be silently
+        # ignored by most infra-level checks, which only look at the
+        # status code.
+        raise HTTPException(status_code=503, detail=f"database unreachable: {e}")
+    finally:
+        db.close()
 
 
 scheduler = BackgroundScheduler()

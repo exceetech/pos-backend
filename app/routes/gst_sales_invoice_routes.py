@@ -9,6 +9,7 @@ All writes are scoped to the authenticated shop — the
 `shop_id` in the URL is enforced against `current_shop.id`,
 never trusted blindly.
 """
+import logging
 from datetime import datetime
 from app.util.time_utils import epoch_ms_to_local, local_now
 from typing import List
@@ -33,6 +34,7 @@ from app.schemas.gst_sales_invoice_schema import (
 )
 
 router = APIRouter(prefix="/gst-sales", tags=["GST Sales Invoices"])
+logger = logging.getLogger(__name__)
 
 
 # --------------------------------------------------------------------
@@ -369,7 +371,7 @@ def sync_gst_sales_invoices(
         except Exception as e:
             response.failed_count += 1
             # Don't bubble — keep replaying the rest of the batch.
-            print(f"[gst-sales/sync] local_id={inv_dto.local_id} failed: {e}")
+            logger.error("[gst-sales/sync] local_id=%s failed: %s", inv_dto.local_id, e)
 
     db.commit()
     response.message = (

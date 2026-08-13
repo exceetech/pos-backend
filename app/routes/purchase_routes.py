@@ -1,5 +1,6 @@
 # routes/purchase.py
 
+import logging
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import IntegrityError
@@ -19,6 +20,7 @@ from app.utils import normalize_name
 from fastapi.responses import JSONResponse
 
 router = APIRouter(prefix="/purchases", tags=["Purchases"])
+logger = logging.getLogger(__name__)
 
 
 @router.put("/cancel")
@@ -386,14 +388,14 @@ def sync_purchases(
 
         except IntegrityError as e:
             db.rollback()
-            print(f"[purchases/sync] local_id={p.local_id} failed: integrity error: {e.orig}")
+            logger.error("[purchases/sync] local_id=%s failed: integrity error: %s", p.local_id, e.orig)
             failed.append({"local_id": p.local_id, "reason": f"Database integrity error: {str(e.orig)}"})
         except Exception as e:
             # A flush/commit failure leaves the session needing a rollback
             # before it can be used again — otherwise every purchase later
             # in the same batch, even perfectly valid ones, would also fail.
             db.rollback()
-            print(f"[purchases/sync] local_id={p.local_id} failed: {e}")
+            logger.error("[purchases/sync] local_id=%s failed: %s", p.local_id, e)
             failed.append({"local_id": p.local_id, "reason": str(e)})
 
     return PurchaseSyncResponse(

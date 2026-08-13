@@ -1,9 +1,12 @@
+import logging
 import os
 from passlib.context import CryptContext
 from jose import JWTError, jwt
 from datetime import datetime, timedelta
 from app.util.time_utils import utc_now
 from fastapi import HTTPException, status
+
+logger = logging.getLogger(__name__)
 
 # ── Password hashing ──────────────────────────────────────────────────────────
 
@@ -20,16 +23,22 @@ def verify_password(plain_password: str, hashed_password: str) -> bool:
 
 # ── JWT ───────────────────────────────────────────────────────────────────────
 
-# Report 5 fix: was a hardcoded literal — anyone with repo access could forge
-# a valid token for any shop, permanently, with no way to rotate it short of
-# editing source and redeploying. Now read from the environment, matching the
-# EMAIL_ADDRESS / EMAIL_PASSWORD pattern already used elsewhere (email_service.py).
-# The hardcoded string is kept ONLY as a fallback so already-deployed
-# environments that haven't set JWT_SECRET_KEY yet don't break on this
-# deploy — set JWT_SECRET_KEY in the environment and this fallback stops
-# mattering. Every previously-issued token was signed with the old literal
-# either way, so this alone doesn't invalidate anything already out there.
-SECRET_KEY = os.getenv("JWT_SECRET_KEY", "eXCeeTechSecretKeyForJWTGeneration")
+# Report 5 fix, tightened further ahead of hosting: this used to be a
+# hardcoded literal with no env override, then a hardcoded literal kept
+# as a FALLBACK when JWT_SECRET_KEY wasn't set. That fallback string is
+# sitting in this source file — if this app is hosted without
+# JWT_SECRET_KEY explicitly set, every login token gets signed with a
+# secret anyone who has seen this repo already knows, which is a full
+# auth bypass (forge a valid session for any shop_id), not just a
+# degraded feature. Fail loudly at import instead — same fail-closed
+# principle as require_admin() in dependencies.py for ADMIN_API_TOKEN.
+SECRET_KEY = os.getenv("JWT_SECRET_KEY")
+if not SECRET_KEY:
+    raise RuntimeError(
+        "JWT_SECRET_KEY is not set. Generate one (e.g. "
+        "`python3 -c \"import secrets; print(secrets.token_urlsafe(48))\"`) "
+        "and set it in the environment before starting the app."
+    )
 ALGORITHM  = "HS256"
 ACCESS_TOKEN_EXPIRE_HOURS = 24
 

@@ -1,3 +1,4 @@
+import logging
 from app.models.inventory import Inventory
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
@@ -20,6 +21,7 @@ from app.dependencies import get_current_shop
 from app.utils import normalize_name, normalize_variant
 
 router = APIRouter(prefix="/products", tags=["Products"])
+logger = logging.getLogger(__name__)
 
 
 # ================= CATALOG =================
@@ -720,7 +722,7 @@ def sync_shop_products(
             success_count += 1
         except Exception as e:
             # Log and continue — one bad row shouldn't fail the whole batch.
-            print(f"[products/sync] failed for local_id={item.local_id}: {e}")
+            logger.error("[products/sync] failed for local_id=%s: %s", item.local_id, e)
 
     db.commit()
 

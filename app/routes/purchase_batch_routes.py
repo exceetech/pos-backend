@@ -4,6 +4,7 @@ Routes for hybrid-inventory purchase_batches.
   • POST /purchase-batches/sync      — idempotent bulk upsert
   • GET  /purchase-batches/{shop_id} — list, newest first
 """
+import logging
 from datetime import datetime
 from app.util.time_utils import epoch_ms_to_local, local_now
 from typing import List
@@ -20,6 +21,7 @@ from app.schemas.purchase_batch_schema import (
 )
 
 router = APIRouter(prefix="/purchase-batches", tags=["Purchase Batches"])
+logger = logging.getLogger(__name__)
 
 
 def _to_dt(ms):
@@ -98,7 +100,7 @@ def sync_purchase_batches(
             response.success_count += 1
         except Exception as e:
             db.rollback()
-            print(f"[purchase-batches/sync] local_id={b.local_id} failed: {e}")
+            logger.error("[purchase-batches/sync] local_id=%s failed: %s", b.local_id, e)
 
     response.message = f"{response.success_count}/{len(payload.batches)} accepted"
     return response

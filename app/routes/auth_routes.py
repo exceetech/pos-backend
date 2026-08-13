@@ -4,6 +4,8 @@ from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks, Form, Re
 from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy.orm import Session
 
+import logging
+from app.rate_limit import limiter
 from app.database import get_db
 from app.models.shop import Shop
 from app.schemas.shop_schema import ShopRegister, ForgotPasswordRequest
@@ -22,11 +24,22 @@ from app.schemas.security_schema import ChangePasswordRequest
 
 
 router = APIRouter(prefix="/auth", tags=["Authentication"])
+logger = logging.getLogger(__name__)
 
 
 # ================= REGISTER =================
+# Rate-limited: sends an OTP email per call, and is unauthenticated by
+# nature (that's the point — you don't have an account yet) — without a
+# limit this is an easy way to mail-bomb an arbitrary inbox or hammer
+# the email provider.
 @router.post("/register")
-def register(shop: ShopRegister, db: Session = Depends(get_db)):
+@limiter.limit("5/minute")
+def register(
+    request: Request,
+    shop: ShopRegister,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
+):
 
     email = shop.email.strip().lower()
 
@@ -65,14 +78,23 @@ def register(shop: ShopRegister, db: Session = Depends(get_db)):
 
     db.commit()
 
-    send_otp_email(target_shop, otp)
+    # Non-blocking (matches /forgot-password below): this used to call
+    # send_otp_email() directly, so every registration waited on a live
+    # SMTP round-trip to Gmail before responding — a slow or throttled
+    # SMTP connection ties up a gunicorn worker for the whole request and
+    # risks tripping gunicorn's --timeout under load.
+    background_tasks.add_task(send_otp_email, target_shop, otp)
 
     return {"message": "OTP sent to email"}
 
 
 # ================= LOGIN =================
 
+# Rate-limited: this is the classic credential-stuffing/brute-force
+# target — 10/minute per IP still comfortably covers a real user
+# mistyping their password a few times.
 @router.post("/login")
+@limiter.limit("10/minute")
 def login(
     request: Request,
     form_data: OAuth2PasswordRequestForm = Depends(),
@@ -304,7 +326,7 @@ def save_token(
     shop = Depends(get_current_shop)
 ):
 
-    print("FCM TOKEN RECEIVED:", data.token)
+    logger.info("FCM token received for shop_id=%s", shop.id)
 
     shop.fcm_token = data.token
     db.commit()
@@ -312,13 +334,20 @@ def save_token(
     return {"message": "Token saved"}
 
 # ================= FORGOT PASSWORD =================
+# Rate-limited: same OTP-email-bombing concern as /register.
+# NOTE: the request body param is named `payload` (not `request`) so it
+# doesn't collide with the `request: Request` slowapi needs — slowapi
+# specifically looks up the request object by the literal kwarg name
+# "request".
 @router.post("/forgot-password")
+@limiter.limit("5/minute")
 def forgot_password(
-    request: ForgotPasswordRequest,
+    request: Request,
+    payload: ForgotPasswordRequest,
     background_tasks: BackgroundTasks,
     db: Session = Depends(get_db)):
 
-    email = request.email
+    email = payload.email
 
     shop = db.query(Shop).filter(Shop.email == email).first()
 
@@ -340,9 +369,12 @@ def forgot_password(
 
 
 # ================= VERIFY OTP =================
-
+# Rate-limited: this is the actual OTP brute-force target (6-digit code,
+# 3 attempts is already enforced server-side below, but that counter is
+# per-shop/per-OTP — this caps guessing across different emails too).
 @router.post("/verify-otp")
-def verify_otp(email: str, otp: str, db: Session = Depends(get_db)):
+@limiter.limit("10/minute")
+def verify_otp(request: Request, email: str, otp: str, db: Session = Depends(get_db)):
 
     shop = db.query(Shop).filter(Shop.email == email).first()
 

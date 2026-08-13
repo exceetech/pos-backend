@@ -1,3 +1,4 @@
+import logging
 from datetime import datetime, timezone
 from app.util.time_utils import epoch_ms_to_local, local_now, local_to_epoch_ms, utc_to_epoch_ms, epoch_ms_to_utc
 
@@ -12,6 +13,7 @@ from app.models.shop_products import ShopProduct
 from app.schemas.inventory_schema import InventoryLogRequest
 
 router = APIRouter(prefix="/inventory", tags=["Inventory"])
+logger = logging.getLogger(__name__)
 
 
 @router.post("/sync")
@@ -20,7 +22,7 @@ def sync_inventory_logs(
     db: Session = Depends(get_db),
     current_shop = Depends(get_current_shop)
 ):
-    print(f"[inventory/sync] shop_id={current_shop.id}, received {len(logs)} log(s)")
+    logger.info("[inventory/sync] shop_id=%s, received %d log(s)", current_shop.id, len(logs))
 
     # Issue 15: each log is now committed on its own (see the db.commit()
     # inside the loop below) instead of the whole batch sharing one
@@ -32,7 +34,10 @@ def sync_inventory_logs(
     # simply resend the same batch, unaware some of it had actually landed.
     for log in logs:
         try:
-            print(f"  → product_id={log.product_id}, type={log.type}, qty={log.quantity}, price={log.price}, date={log.date}")
+            logger.debug(
+                "product_id=%s, type=%s, qty=%s, price=%s, date=%s",
+                log.product_id, log.type, log.quantity, log.price, log.date,
+            )
 
             # =================================================
             # 🔥 FK SAFETY CHECK (CRITICAL FIX)
@@ -44,7 +49,7 @@ def sync_inventory_logs(
 
             if not product:
                 # skip invalid product instead of crashing
-                print(f"  ⚠️  Skipping log for non-existent product_id={log.product_id}")
+                logger.warning("Skipping log for non-existent product_id=%s", log.product_id)
                 continue
 
             # =================================================
@@ -219,7 +224,7 @@ def sync_inventory_logs(
             db.commit()
         except Exception as e:
             db.rollback()
-            print(f"  ⚠️  Skipping log for product_id={log.product_id}: {e}")
+            logger.warning("Skipping log for product_id=%s: %s", log.product_id, e)
 
     return {"message": "Inventory synced successfully"}
 

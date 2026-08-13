@@ -22,22 +22,32 @@ def require_admin(x_admin_token: Optional[str] = Header(None)) -> None:
     Shared-secret guard for admin-tier endpoints (catalog review, shop
     broadcast/archive/restore, subscription activation).
 
-    - If the ADMIN_API_TOKEN env var is NOT set, the endpoint stays open —
-      this keeps local/dev setups usable out of the box.
-    - Once ADMIN_API_TOKEN is set, callers must send a matching
-      `X-Admin-Token` header or they're rejected.
+    Fail-closed: ADMIN_API_TOKEN must be set, and callers must send a
+    matching `X-Admin-Token` header, or the request is rejected. This
+    used to fail OPEN when the env var was unset — a convenience for
+    bare-metal local dev that becomes a real hole once this app is
+    hosted, since a missing env var on the server (a much easier mistake
+    to make on Cloud Run than on a laptop where you set it once) would
+    silently leave every admin-tier endpoint wide open with zero
+    authentication: shop broadcast to every device, archived-shop PII
+    enumeration by email, restoring/overwriting a live shop, granting
+    any shop_id a free subscription. Misconfiguration should be loud
+    (500, endpoint refuses to work) rather than silent (200, no auth at
+    all).
 
     Originally defined only in admin_catalog_routes.py and applied to that
     router. admin_routes.py (broadcast / archived-shops / restore-shop) and
     POST /subscription/admin/activate had NO guard at all — not even the
-    optional env-var one — so anyone who could reach the API could
-    broadcast to every device, enumerate archived-shop PII by email,
-    swap a live shop out from under its owner via restore-shop, or grant
-    any shop_id a free subscription, all with zero authentication. Moved
-    here so every admin-tier router can share the same gate.
+    env-var one — so this is now the single shared gate for every
+    admin-tier router.
     """
     expected = os.getenv("ADMIN_API_TOKEN")
-    if expected and x_admin_token != expected:
+    if not expected:
+        raise HTTPException(
+            status_code=500,
+            detail="Server misconfiguration: ADMIN_API_TOKEN is not set",
+        )
+    if x_admin_token != expected:
         raise HTTPException(status_code=401, detail="Admin authorization required")
 
 

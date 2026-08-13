@@ -1,5 +1,8 @@
+import logging
 import firebase_admin
 from firebase_admin import credentials, messaging
+
+logger = logging.getLogger(__name__)
 
 # ✅ Initialize Firebase ONLY ONCE
 cred = credentials.Certificate("app/firebase-key.json")
@@ -11,7 +14,9 @@ if not firebase_admin._apps:
 # ================= SINGLE NOTIFICATION =================
 def send_notification(token: str, title: str, body: str):
 
-    print("📲 Sending PUSH to:", token)
+    # Not logging the raw token — it's a per-device credential, same
+    # class of sensitivity as a session token.
+    logger.info("Sending push notification: %s", title)
 
     message = messaging.Message(
         data={   # ✅ IMPORTANT: use DATA
@@ -23,17 +28,17 @@ def send_notification(token: str, title: str, body: str):
 
     response = messaging.send(message)
 
-    print("✅ PUSH SENT:", response)
+    logger.info("Push sent: %s", response)
 
 
 # ================= BROADCAST =================
 def send_broadcast(tokens: list[str], title: str, body: str):
 
     if not tokens:
-        print("❌ No tokens provided")
+        logger.warning("send_broadcast called with no tokens")
         return
 
-    print("📢 Broadcasting to:", tokens)
+    logger.info("Broadcasting '%s' to %d device(s)", title, len(tokens))
 
     message = messaging.MulticastMessage(
         data={   # ✅ IMPORTANT: use DATA
@@ -45,5 +50,4 @@ def send_broadcast(tokens: list[str], title: str, body: str):
 
     response = messaging.send_each_for_multicast(message)
 
-    print("✅ Success:", response.success_count)
-    print("❌ Failure:", response.failure_count)
+    logger.info("Broadcast success=%d failure=%d", response.success_count, response.failure_count)

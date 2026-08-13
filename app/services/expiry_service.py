@@ -1,3 +1,4 @@
+import logging
 from datetime import datetime
 from app.util.time_utils import utc_now
 from sqlalchemy.orm import Session
@@ -5,6 +6,8 @@ from app.models.subscription import Subscription
 from app.models.shop import Shop
 from app.services.expiry_email import send_expiry_email
 from app.firebase_service import send_notification
+
+logger = logging.getLogger(__name__)
 
 
 def check_subscriptions(db: Session):
@@ -21,7 +24,7 @@ def check_subscriptions(db: Session):
         if not shop:
             continue
 
-        print(f"📊 Shop: {shop.shop_name} | Days left: {days_left}")
+        logger.info("Shop: %s | Days left: %s", shop.shop_name, days_left)
 
         # Captured BEFORE the status flip below, so the "expired" branch
         # can still tell whether this was a trial ending vs. a paid plan
@@ -32,7 +35,7 @@ def check_subscriptions(db: Session):
         # ================= 🔔 REMINDER =================
         if days_left in [30, 15, 10, 5, 1]:
 
-            print("🔔 Reminder triggered")
+            logger.info("Expiry reminder triggered for shop_id=%s, days_left=%s", shop.id, days_left)
 
             # 📧 Email
             if shop.email:
@@ -49,7 +52,7 @@ def check_subscriptions(db: Session):
         # ================= ❌ EXPIRED =================
         if days_left <= 0 and sub.status != "expired":
 
-            print("🚫 Expired triggered")
+            logger.info("Subscription expired for shop_id=%s", shop.id)
 
             sub.status = "expired"
 
