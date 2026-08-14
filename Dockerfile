@@ -30,4 +30,11 @@ COPY . .
 # workers is the standard production combo for FastAPI: gunicorn manages
 # worker processes (restarts a worker if it crashes), uvicorn's worker
 # class handles the actual async request serving.
+#
+# --workers 2: safe to run with multiple workers. Each worker imports
+# app/main.py independently, but the background scheduler (subscription
+# expiry, Razorpay order reconciliation, log/report cleanup) is gated
+# behind a Postgres advisory lock — only the worker that acquires it
+# actually starts the scheduler, so jobs never run duplicated across
+# workers. See the "Scheduler single-owner lock" block in app/main.py.
 CMD ["sh", "-c", "gunicorn app.main:app -k uvicorn.workers.UvicornWorker --bind 0.0.0.0:${PORT:-8080} --workers 2 --timeout 60"]

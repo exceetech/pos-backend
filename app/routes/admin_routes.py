@@ -31,6 +31,24 @@ def broadcast_notification(title: str, body: str, db: Session = Depends(get_db))
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+#  GET /admin/razorpay-mode
+#
+#  Confirms whether this server is currently taking test or live Razorpay
+#  payments, without digging through logs. Admin-only (require_admin) since
+#  it doesn't return any secret value — just which mode + which public key
+#  id is active — but is still not something to expose publicly.
+# ─────────────────────────────────────────────────────────────────────────────
+
+@router.get("/admin/razorpay-mode")
+def get_razorpay_mode():
+    from app.services import razorpay_service
+
+    mode = razorpay_service.get_active_mode()
+    key_id = razorpay_service.get_public_key_id()
+    return {"mode": mode, "key_id": key_id}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 #  GET /admin/archived-shops?email=...
 #
 #  Lists every archived workspace that originally belonged to the given email.

@@ -88,12 +88,14 @@ This issue disappears entirely once actually on GCP — Cloud Run and Cloud SQL 
 
 **The image and startup command are identical the whole way through.** Getting it working locally is not a detour from the GCP setup — it *is* the GCP setup, minus the "how do I get this image there and tell Cloud Run how to talk to it" part, which is what the GCP-specific topics (Cloud SQL, secrets, Cloud Run deploy) cover next.
 
+**Run migrations before the first deploy.** `app/main.py` no longer calls `Base.metadata.create_all()` (removed 2026-08-14 — see `DATABASE_MIGRATIONS_GUIDE.md`), so a brand-new Cloud SQL database has zero tables until you run `alembic upgrade head` against it. Do this once against the target database before pointing Cloud Run at it for the first time — the app will fail on every request (not just start up oddly) if the schema doesn't exist yet.
+
 ---
 
 ## 6. Secrets — the one real gap, revisited
 
 `app/firebase-key.json` and `app/.env` are correctly excluded from the image. That means the running container needs those values delivered another way at deploy time:
-- Simple values (`DATABASE_URL`, `ADMIN_API_TOKEN`, `RAZORPAY_KEY_SECRET`, etc.) → environment variables set directly in the Cloud Run service config.
+- Simple values (`DATABASE_URL`, `ADMIN_API_TOKEN`, `RAZORPAY_MODE`, `RAZORPAY_LIVE_KEY_SECRET`, etc.) → environment variables set directly in the Cloud Run service config. See `app/services/razorpay_service.py`'s module docstring for the full Razorpay test/live variable set and how `RAZORPAY_MODE` picks between them.
 - `firebase-key.json` (a whole file, not a single value) → **Secret Manager**, mounted as a file at a path Cloud Run is told to use.
 
 The code currently does `credentials.Certificate("app/firebase-key.json")` (`app/firebase_service.py`) — assumes a literal file at that exact path, so whatever mounts the secret on Cloud Run needs to put it there. This is covered in more detail when Cloud Run deployment is set up.

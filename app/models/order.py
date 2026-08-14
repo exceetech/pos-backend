@@ -32,7 +32,12 @@ class Order(Base):
     amount_paise = Column(Integer, nullable=False)
 
     razorpay_order_id = Column(String, nullable=True, index=True)
-    razorpay_payment_id = Column(String, nullable=True)
+    # unique=True (migration 0047) — backstop against double-activation:
+    # Postgres rejects a second row writing the same non-NULL payment id
+    # outright, on top of the row-level lock in reconcile_stuck_orders().
+    # NULL is exempt from the uniqueness check (many rows never reach a
+    # captured payment), so this only ever blocks genuine duplicates.
+    razorpay_payment_id = Column(String, nullable=True, unique=True)
 
     status = Column(String, default="created", nullable=False)
 

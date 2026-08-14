@@ -3,7 +3,7 @@ from app import logging_config  # noqa: F401 — sets up logging.basicConfig bef
 import logging
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from app.database import engine, Base, SessionLocal
+from app.database import engine, SessionLocal
 from sqlalchemy import text
 from slowapi.errors import RateLimitExceeded
 from slowapi import _rate_limit_exceeded_handler
@@ -92,9 +92,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Create tables
-Base.metadata.create_all(bind=engine)
-
 # ──────────────────────────────────────────────────────────────────────
 # Schema changes now live entirely in Alembic (migrations/versions/).
 # The 28 ad-hoc startup ALTER functions that used to run here (belt-
@@ -105,6 +102,15 @@ Base.metadata.create_all(bind=engine)
 # boot. Run `alembic upgrade head` to apply schema changes; this file
 # no longer does it implicitly. See migrations/versions/0015_*.py
 # onward for the ported logic, one file per original function.
+#
+# `Base.metadata.create_all(bind=engine)` used to run here as well, in
+# addition to Alembic. Removed (2026-08-14): with 46 migrations now the
+# sole source of schema truth, create_all() alongside them is a silent
+# schema-drift risk — a model change without a matching migration would
+# get create_all()'d into existence without ever going through Alembic,
+# leaving the migration history lying about what's actually in the DB.
+# Alembic (`alembic upgrade head`) is now the only thing that creates or
+# alters tables.
 # ──────────────────────────────────────────────────────────────────────
 
 
@@ -259,7 +265,58 @@ def health_check():
         db.close()
 
 
-scheduler = BackgroundScheduler()
+# ──────────────────────────────────────────────────────────────────────
+# Scheduler single-owner lock (2026-08-14).
+#
+# gunicorn runs this app with multiple worker processes (see Dockerfile,
+# --workers 2). Each worker imports this module independently, so
+# without a guard, every worker would create its own BackgroundScheduler
+# and register the same 4 jobs — including order reconciliation, which
+# checks Razorpay orders every 15 minutes and can activate a subscription
+# / redeem a coupon when it finds one paid. That path was found to be
+# vulnerable to a genuine double-activation race under true concurrent
+# execution (read-then-write status check, no DB-level lock — see
+# order_reconciliation_service.py for the row-level fix on the query
+# side). Running two schedulers concurrently is the other half of that
+# risk, so only one process should ever run the scheduler at all.
+#
+# Fix: a Postgres session-level advisory lock. Every worker tries to
+# acquire it at import time; only the one that succeeds starts the
+# scheduler. The connection used to acquire the lock is kept open for
+# the life of that process — a session-level advisory lock releases
+# automatically when its connection closes, so if the lock-holding
+# worker dies/restarts, another worker (or, if this is later scaled
+# horizontally across multiple instances, another instance) can pick it
+# up. No coordination beyond Postgres itself is required, and this
+# keeps working correctly regardless of how many workers or instances
+# end up running in the future.
+# ──────────────────────────────────────────────────────────────────────
+_SCHEDULER_ADVISORY_LOCK_ID = 928374651  # arbitrary constant, unique to this job
+_scheduler_lock_conn = None
+
+
+def _acquire_scheduler_lock() -> bool:
+    global _scheduler_lock_conn
+    try:
+        conn = engine.connect()
+        acquired = conn.execute(
+            text("SELECT pg_try_advisory_lock(:lock_id)"),
+            {"lock_id": _SCHEDULER_ADVISORY_LOCK_ID},
+        ).scalar()
+        if acquired:
+            _scheduler_lock_conn = conn  # kept open deliberately — do not close
+            return True
+        conn.close()
+        return False
+    except Exception as e:  # pragma: no cover
+        logger.warning(
+            "Scheduler advisory lock could not be acquired (%s) — scheduler will "
+            "not start on this worker.",
+            e,
+        )
+        return False
+
+
 def run_expiry_check():
     db = SessionLocal()
     check_subscriptions(db)
@@ -293,23 +350,32 @@ def run_diagnostic_report_cleanup():
         db.close()
 
 
-# ⏰ Runs every 24 hours
-scheduler.add_job(run_expiry_check, "interval", hours=24)
-# ⏰ Order reconciliation (plan §6.4/§9) — checks Razorpay orders stuck
-# in "created" status for longer than the grace period. Runs far more
-# frequently than the expiry check since this is real money potentially
-# sitting unresolved, not a routine status sweep.
-scheduler.add_job(run_order_reconciliation, "interval", minutes=15)
-# ⏰ user_event_logs retention — deletes breadcrumb rows older than 90
-# days (RETENTION_DAYS in event_log_cleanup_service.py). Same cadence as
-# the expiry check since this is routine housekeeping, not time-sensitive.
-scheduler.add_job(run_event_log_cleanup, "interval", hours=24)
-# ⏰ diagnostic_reports retention — deletes on-demand full-trail uploads
-# older than 14 days (RETENTION_DAYS in diagnostic_report_cleanup_service.py).
-# Much shorter than user_event_logs since a report is only useful while a
-# specific investigation is active.
-scheduler.add_job(run_diagnostic_report_cleanup, "interval", hours=24)
-scheduler.start()
+if _acquire_scheduler_lock():
+    scheduler = BackgroundScheduler()
+    # ⏰ Runs every 24 hours
+    scheduler.add_job(run_expiry_check, "interval", hours=24)
+    # ⏰ Order reconciliation (plan §6.4/§9) — checks Razorpay orders stuck
+    # in "created" status for longer than the grace period. Runs far more
+    # frequently than the expiry check since this is real money potentially
+    # sitting unresolved, not a routine status sweep.
+    scheduler.add_job(run_order_reconciliation, "interval", minutes=15)
+    # ⏰ user_event_logs retention — deletes breadcrumb rows older than 90
+    # days (RETENTION_DAYS in event_log_cleanup_service.py). Same cadence as
+    # the expiry check since this is routine housekeeping, not time-sensitive.
+    scheduler.add_job(run_event_log_cleanup, "interval", hours=24)
+    # ⏰ diagnostic_reports retention — deletes on-demand full-trail uploads
+    # older than 14 days (RETENTION_DAYS in diagnostic_report_cleanup_service.py).
+    # Much shorter than user_event_logs since a report is only useful while a
+    # specific investigation is active.
+    scheduler.add_job(run_diagnostic_report_cleanup, "interval", hours=24)
+    scheduler.start()
+    logger.info("Background scheduler started on this worker (advisory lock acquired).")
+else:
+    logger.info("Background scheduler not started on this worker (another worker holds the lock).")
 
 
-#READY FOR AWS HOSTING
+# READY FOR HOSTING — target platform is Google Cloud Run (see
+# Dockerfile: reads $PORT at runtime, the Cloud Run convention). An
+# earlier "READY FOR AWS HOSTING" comment here was stale/inconsistent
+# with the Dockerfile and docs/DOCKER_GUIDE.md, which have always
+# targeted Cloud Run — corrected 2026-08-14.
