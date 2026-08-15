@@ -1,11 +1,23 @@
 import logging
+import os
 import firebase_admin
 from firebase_admin import credentials, messaging
 
 logger = logging.getLogger(__name__)
 
 # ✅ Initialize Firebase ONLY ONCE
-cred = credentials.Certificate("app/firebase-key.json")
+#
+# Credentials path is overridable via FIREBASE_KEY_PATH (2026-08-15).
+# In production, this secret is mounted by Cloud Run as a file — but it
+# must NOT be mounted anywhere under app/, since Cloud Run mounts a
+# secret file by creating a volume at the file's *parent directory*,
+# which would silently replace the entire app/ package (main.py,
+# routes/, everything) with just this one file. Mount it to a separate
+# path instead (e.g. /secrets/firebase-key.json) and set
+# FIREBASE_KEY_PATH to match. Defaults to the original local-dev path
+# when unset, so nothing changes for local development.
+_firebase_key_path = os.getenv("FIREBASE_KEY_PATH", "app/firebase-key.json")
+cred = credentials.Certificate(_firebase_key_path)
 
 if not firebase_admin._apps:
     firebase_admin.initialize_app(cred)

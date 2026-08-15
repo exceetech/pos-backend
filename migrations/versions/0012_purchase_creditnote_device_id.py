@@ -25,19 +25,33 @@ depends_on = None
 
 
 def upgrade():
-    op.add_column('purchases', sa.Column('client_device_id', sa.String, nullable=True))
-    op.create_index(
-        'ix_purchases_client_key',
-        'purchases',
-        ['shop_id', 'client_device_id', 'local_id'],
-    )
+    # Guarded (2026-08-15): both purchases and credit_notes are created
+    # by the baseline migration (0000_baseline_schema) from today's
+    # model, which already includes these columns/indexes.
+    from sqlalchemy import inspect
+    bind = op.get_bind()
 
-    op.add_column('credit_notes', sa.Column('client_device_id', sa.String, nullable=True))
-    op.create_index(
-        'ix_credit_notes_client_key',
-        'credit_notes',
-        ['shop_id', 'client_device_id', 'local_id'],
-    )
+    existing = {c["name"] for c in inspect(bind).get_columns("purchases")}
+    if "client_device_id" not in existing:
+        op.add_column('purchases', sa.Column('client_device_id', sa.String, nullable=True))
+    existing_indexes = {ix["name"] for ix in inspect(bind).get_indexes("purchases")}
+    if "ix_purchases_client_key" not in existing_indexes:
+        op.create_index(
+            'ix_purchases_client_key',
+            'purchases',
+            ['shop_id', 'client_device_id', 'local_id'],
+        )
+
+    existing = {c["name"] for c in inspect(bind).get_columns("credit_notes")}
+    if "client_device_id" not in existing:
+        op.add_column('credit_notes', sa.Column('client_device_id', sa.String, nullable=True))
+    existing_indexes = {ix["name"] for ix in inspect(bind).get_indexes("credit_notes")}
+    if "ix_credit_notes_client_key" not in existing_indexes:
+        op.create_index(
+            'ix_credit_notes_client_key',
+            'credit_notes',
+            ['shop_id', 'client_device_id', 'local_id'],
+        )
 
 
 def downgrade():

@@ -17,9 +17,16 @@ depends_on = None
 
 
 def upgrade():
-    op.add_column('purchase_items',
-        sa.Column('supply_classification', sa.String, nullable=False, server_default='TAXABLE')
-    )
+    # Guarded (2026-08-15): purchase_items is created by the baseline
+    # migration (0000_baseline_schema) from today's model, which already
+    # includes this column — existence check makes this a safe no-op on
+    # a fresh database, still adds it normally on an existing one.
+    from sqlalchemy import inspect
+    existing = {c["name"] for c in inspect(op.get_bind()).get_columns("purchase_items")}
+    if "supply_classification" not in existing:
+        op.add_column('purchase_items',
+            sa.Column('supply_classification', sa.String, nullable=False, server_default='TAXABLE')
+        )
 
 def downgrade():
     op.drop_column('purchase_items', 'supply_classification')

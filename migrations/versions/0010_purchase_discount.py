@@ -15,7 +15,13 @@ branch_labels = None
 depends_on = None
 
 def upgrade() -> None:
-    op.add_column('purchase_items', sa.Column('discount_amount', sa.Float(), server_default='0.0', nullable=False))
+    # Guarded (2026-08-15): purchase_items is created by the baseline
+    # migration (0000_baseline_schema) from today's model, which already
+    # includes this column.
+    from sqlalchemy import inspect
+    existing = {c["name"] for c in inspect(op.get_bind()).get_columns("purchase_items")}
+    if "discount_amount" not in existing:
+        op.add_column('purchase_items', sa.Column('discount_amount', sa.Float(), server_default='0.0', nullable=False))
 
 def downgrade() -> None:
     op.drop_column('purchase_items', 'discount_amount')

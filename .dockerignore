@@ -10,6 +10,7 @@ __pycache__/
 # secrets on Cloud Run), not copied in at build time.
 app/.env
 app/.env.docker
+app/.env.gcptest
 app/firebase-key.json
 *.env
 

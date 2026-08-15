@@ -35,6 +35,21 @@ from .app_config import AppConfig
 from .audit_log import AuditLog
 from .user_event_log import UserEventLog
 from .diagnostic_report import DiagnosticReport
+# Purchase, PurchaseItem, SaleItem, GlobalHSN, GlobalProductVariant — found
+# missing from this file 2026-08-15 while debugging a fresh-database
+# migration failure. These tables were only ever getting registered on
+# Base.metadata as a side effect of various route modules importing
+# these classes directly (purchase_routes.py, sales_routes.py, etc.),
+# which happened to run before the old Base.metadata.create_all() call
+# in main.py — exactly the fragile pattern the comment above (for
+# Supplier) already warned about, just not applied consistently. Adding
+# them here directly means these tables register correctly regardless
+# of import order or which routes happen to be wired up.
+from .purchase import Purchase
+from .purchase_item import PurchaseItem
+from .sale_item import SaleItem
+from .global_hsn import GlobalHSN
+from .global_product_variant import GlobalProductVariant
 
 __all__ = [
     "Bill",
@@ -70,4 +85,9 @@ __all__ = [
     "AuditLog",
     "UserEventLog",
     "DiagnosticReport",
+    "Purchase",
+    "PurchaseItem",
+    "SaleItem",
+    "GlobalHSN",
+    "GlobalProductVariant",
 ]

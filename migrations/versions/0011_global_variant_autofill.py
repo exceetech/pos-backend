@@ -58,43 +58,60 @@ def upgrade():
         )
 
     # 2. Add new columns --------------------------------------------
-    op.add_column('global_product_variants',
-                  sa.Column('created_by_shop_id', sa.Integer(), nullable=True))
-    op.add_column('global_product_variants',
-                  sa.Column('hsn_code', sa.String(), nullable=True))
-    op.add_column('global_product_variants',
-                  sa.Column('hsn_description', sa.String(), nullable=True))
-    op.add_column('global_product_variants',
-                  sa.Column('official_uqc', sa.String(), nullable=True))
-    op.add_column('global_product_variants',
-                  sa.Column('default_gst_rate', sa.Float(), server_default='0', nullable=True))
-    op.add_column('global_product_variants',
-                  sa.Column('cgst_percentage', sa.Float(), server_default='0', nullable=True))
-    op.add_column('global_product_variants',
-                  sa.Column('sgst_percentage', sa.Float(), server_default='0', nullable=True))
-    op.add_column('global_product_variants',
-                  sa.Column('igst_percentage', sa.Float(), server_default='0', nullable=True))
-    op.add_column('global_product_variants',
-                  sa.Column('cess_rate', sa.Float(), server_default='0', nullable=True))
+    # Guarded (2026-08-15): global_product_variants is created by the
+    # baseline migration (0000_baseline_schema) from today's model, which
+    # already includes these columns and constraints — existence checks
+    # make this a safe no-op on a fresh database.
+    from sqlalchemy import inspect
+    bind = op.get_bind()
+    existing = {c["name"] for c in inspect(bind).get_columns("global_product_variants")}
+
+    def add_if_missing(col_name, column):
+        if col_name not in existing:
+            op.add_column('global_product_variants', column)
+
+    add_if_missing('created_by_shop_id', sa.Column('created_by_shop_id', sa.Integer(), nullable=True))
+    add_if_missing('hsn_code', sa.Column('hsn_code', sa.String(), nullable=True))
+    add_if_missing('hsn_description', sa.Column('hsn_description', sa.String(), nullable=True))
+    add_if_missing('official_uqc', sa.Column('official_uqc', sa.String(), nullable=True))
+    add_if_missing('default_gst_rate', sa.Column('default_gst_rate', sa.Float(), server_default='0', nullable=True))
+    add_if_missing('cgst_percentage', sa.Column('cgst_percentage', sa.Float(), server_default='0', nullable=True))
+    add_if_missing('sgst_percentage', sa.Column('sgst_percentage', sa.Float(), server_default='0', nullable=True))
+    add_if_missing('igst_percentage', sa.Column('igst_percentage', sa.Float(), server_default='0', nullable=True))
+    add_if_missing('cess_rate', sa.Column('cess_rate', sa.Float(), server_default='0', nullable=True))
 
     # 3. FK + uniqueness. SQLite cannot ALTER-ADD a constraint, so use
     #    batch mode there and skip the FK (unsupported via ALTER).
+    existing_uniques = {uc["name"] for uc in inspect(bind).get_unique_constraints("global_product_variants")}
+    # Check by constrained column, not by name — a table created via
+    # create_all() from the current model (which declares this FK
+    # without an explicit name) gets a Postgres auto-generated name, not
+    # 'fk_gpv_created_by_shop', so a name-only check would create a
+    # harmless-but-messy duplicate constraint on a fresh database.
+    fk_already_exists = any(
+        fk["constrained_columns"] == ["created_by_shop_id"]
+        for fk in inspect(bind).get_foreign_keys("global_product_variants")
+    )
+
     if dialect == "sqlite":
-        with op.batch_alter_table('global_product_variants') as batch:
-            batch.create_unique_constraint(
-                'uix_gpv_product_variant', ['product_id', 'variant_name']
-            )
+        if 'uix_gpv_product_variant' not in existing_uniques:
+            with op.batch_alter_table('global_product_variants') as batch:
+                batch.create_unique_constraint(
+                    'uix_gpv_product_variant', ['product_id', 'variant_name']
+                )
     else:
-        op.create_foreign_key(
-            'fk_gpv_created_by_shop',
-            'global_product_variants', 'shops',
-            ['created_by_shop_id'], ['id'],
-        )
-        op.create_unique_constraint(
-            'uix_gpv_product_variant',
-            'global_product_variants',
-            ['product_id', 'variant_name'],
-        )
+        if not fk_already_exists:
+            op.create_foreign_key(
+                'fk_gpv_created_by_shop',
+                'global_product_variants', 'shops',
+                ['created_by_shop_id'], ['id'],
+            )
+        if 'uix_gpv_product_variant' not in existing_uniques:
+            op.create_unique_constraint(
+                'uix_gpv_product_variant',
+                'global_product_variants',
+                ['product_id', 'variant_name'],
+            )
 
 
 def downgrade():

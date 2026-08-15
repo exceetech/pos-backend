@@ -17,7 +17,7 @@ import sqlalchemy as sa
 
 # revision identifiers
 revision = '0001_gst_module'
-down_revision = None
+down_revision = '0000_baseline_schema'
 branch_labels = None
 depends_on = None
 
@@ -108,13 +108,22 @@ def upgrade():
 
     # ============================================================
     # 4. Add GST columns to shop_products (safe: nullable with default)
+    # Guarded (2026-08-15): the baseline migration (0000_baseline_schema)
+    # creates shop_products from today's model, which already includes
+    # these columns — so on a fresh database this would otherwise be a
+    # duplicate-column error. Existing databases where shop_products
+    # predates these columns still get them added normally.
     # ============================================================
-    op.add_column('shop_products',
-        sa.Column('hsn_code', sa.String, nullable=True)
-    )
-    op.add_column('shop_products',
-        sa.Column('default_gst_rate', sa.Float, nullable=True, server_default='0.0')
-    )
+    from sqlalchemy import inspect
+    existing = {c["name"] for c in inspect(op.get_bind()).get_columns("shop_products")}
+    if "hsn_code" not in existing:
+        op.add_column('shop_products',
+            sa.Column('hsn_code', sa.String, nullable=True)
+        )
+    if "default_gst_rate" not in existing:
+        op.add_column('shop_products',
+            sa.Column('default_gst_rate', sa.Float, nullable=True, server_default='0.0')
+        )
 
 
 def downgrade():

@@ -22,13 +22,24 @@ depends_on = None
 
 
 def upgrade():
-    op.add_column('bills', sa.Column('client_bill_id', sa.Integer, nullable=True))
-    op.add_column('bills', sa.Column('client_device_id', sa.String, nullable=True))
-    op.create_index(
-        'ix_bills_client_key',
-        'bills',
-        ['shop_id', 'client_device_id', 'client_bill_id'],
-    )
+    # Guarded (2026-08-15): bills is now created by the baseline migration
+    # (0000_baseline_schema) from today's model, which already includes
+    # these columns and this index — existence checks make this a safe
+    # no-op on a fresh database, still applied normally on an existing one.
+    from sqlalchemy import inspect
+    bind = op.get_bind()
+    existing = {c["name"] for c in inspect(bind).get_columns("bills")}
+    if "client_bill_id" not in existing:
+        op.add_column('bills', sa.Column('client_bill_id', sa.Integer, nullable=True))
+    if "client_device_id" not in existing:
+        op.add_column('bills', sa.Column('client_device_id', sa.String, nullable=True))
+    existing_indexes = {ix["name"] for ix in inspect(bind).get_indexes("bills")}
+    if "ix_bills_client_key" not in existing_indexes:
+        op.create_index(
+            'ix_bills_client_key',
+            'bills',
+            ['shop_id', 'client_device_id', 'client_bill_id'],
+        )
 
 
 def downgrade():
