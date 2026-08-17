@@ -15,6 +15,10 @@ from app.util.time_utils import APP_TZ, local_now, local_to_epoch_ms, utc_to_epo
 from app.dependencies import get_current_shop
 from app.models.gst_profile import StoreGstProfile
 from app.services.gst_service import normalize_customer_state, extract_state_code
+from app.services import razorpay_service
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 def _resolve_shop_state_code(db: Session, shop) -> str:
@@ -86,6 +90,28 @@ def cancel_bill(
         bill.cancelled_at = _cancelled_ms_to_local(payload.cancelled_at)
         bill.active = False
         db.commit()
+
+        # Close any still-open QR/payment link for this bill so it can't
+        # be scanned/paid after the sale itself has been voided — a paid
+        # QR on a cancelled bill would be money collected with nothing
+        # left to reconcile it against. Best-effort: the cancellation
+        # itself must succeed regardless of Razorpay reachability, and a
+        # bill that never had Razorpay credentials configured has nothing
+        # to close anyway.
+        if bill.payment_status != "paid" and (bill.razorpay_qr_id or bill.razorpay_payment_link_id):
+            settings = db.query(BillingSettings).filter(BillingSettings.shop_id == current_shop.id).first()
+            if settings and settings.razorpay_key_id and settings.razorpay_key_secret:
+                try:
+                    if bill.razorpay_qr_id:
+                        razorpay_service.close_qr_code(
+                            bill.razorpay_qr_id, settings.razorpay_key_id, settings.razorpay_key_secret
+                        )
+                    if bill.razorpay_payment_link_id:
+                        razorpay_service.cancel_payment_link(
+                            bill.razorpay_payment_link_id, settings.razorpay_key_id, settings.razorpay_key_secret
+                        )
+                except Exception:
+                    logger.exception("Failed to close QR/payment link for cancelled bill %s", bill.id)
 
     # Delete orphaned analytics data so the profit dashboard stays clean
     # (Moved outside the ⁠ is_cancelled ⁠ check because the GST sync might have already marked the bill as cancelled)
@@ -386,7 +412,8 @@ def get_bill(
             "customer_state": bill.customer_state,
             "customer_state_code": bill.customer_state_code,
             "supply_type": bill.supply_type,
-            "is_cancelled": bool(bill.is_cancelled)  # N1
+            "is_cancelled": bool(bill.is_cancelled),  # N1
+            "payment_status": bill.payment_status
         },
         "items": [
             {
@@ -429,6 +456,37 @@ def get_bill_cancellations(
         {
             "bill_number": b.bill_number,
             "cancelled_at": local_to_epoch_ms(b.cancelled_at) if b.cancelled_at else None,
+            "updated_at": utc_to_epoch_ms(b.updated_at) if b.updated_at else None,
+        }
+        for b in rows
+    ]
+
+
+@router.get("/payment-status")
+def get_bill_payment_status_updates(
+    updated_since: int = 0,
+    db: Session = Depends(get_db),
+    current_shop = Depends(get_current_shop)
+):
+    """Propagate "customer paid the UPI link" across terminals — same
+    cursor pattern as /bills/cancellations above, keyed on the server-set
+    `updated_at` (which the payment_status column bump already triggers,
+    same onupdate=utc_now as everywhere else on Bill). Only paid bills
+    are ever returned; there's nothing else in payment_status the app
+    needs to learn about from here."""
+    q = db.query(Bill).filter(
+        Bill.shop_id == current_shop.id,
+        Bill.payment_status == "paid",
+    )
+    if updated_since > 0:
+        q = q.filter(Bill.updated_at >= epoch_ms_to_utc(updated_since))
+
+    rows = q.order_by(Bill.updated_at).all()
+    return [
+        {
+            "bill_number": b.bill_number,
+            "payment_status": b.payment_status,
+            "razorpay_payment_id": b.razorpay_payment_id,
             "updated_at": utc_to_epoch_ms(b.updated_at) if b.updated_at else None,
         }
         for b in rows
@@ -544,7 +602,11 @@ def get_bills(
             "total_amount": b.final_amount,
             "payment_method": b.payment_method,
             "created_at": str(b.created_at),
-            "is_cancelled": bool(b.is_cancelled)  # N1
+            "is_cancelled": bool(b.is_cancelled),  # N1
+            # UPI-link status only — irrelevant (and left "unpaid") for
+            # every other payment_method, since only the UPI send-to-
+            # customer flow ever sets this via the Razorpay webhook.
+            "payment_status": b.payment_status
         }
         for b in bills
     ]

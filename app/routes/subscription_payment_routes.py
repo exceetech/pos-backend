@@ -385,6 +385,14 @@ async def razorpay_webhook(request: Request, db: Session = Depends(get_db)):
         else:
             logger.warning("Webhook payment.captured for unknown razorpay_order_id=%s", rp_order_id)
 
+    # NOTE: POS "send to customer" bill payments (payment_link.paid) are
+    # NOT handled here. Each shop connects its OWN Razorpay account for
+    # that flow (BillingSettings.razorpay_*), so those webhook deliveries
+    # are signed with that shop's own secret, not this platform account's
+    # RAZORPAY_TEST_WEBHOOK_SECRET — they can't be verified in this
+    # function at all. See pos_payment_routes.webhook for the dedicated,
+    # per-shop-secret-verified endpoint that handles them instead.
+
     if event_id:
         db.add(ProcessedWebhookEvent(razorpay_event_id=event_id, event_type=event_type))
         db.commit()

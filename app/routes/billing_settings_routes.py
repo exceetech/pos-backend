@@ -33,10 +33,21 @@ def get_settings(
         db.commit()
         db.refresh(settings)
 
-    return settings
+    # Built explicitly (not a bare ORM passthrough) — razorpay_configured
+    # is computed, not a real column, and key_secret/webhook_secret must
+    # never end up in this response even if a future field gets added
+    # carelessly to the ORM model.
+    return BillingSettingsResponse(
+        default_gst=settings.default_gst,
+        printer_layout=settings.printer_layout,
+        razorpay_key_id=settings.razorpay_key_id,
+        razorpay_configured=bool(
+            settings.razorpay_key_id and settings.razorpay_key_secret and settings.razorpay_webhook_secret
+        ),
+    )
 
 
-@router.put("")
+@router.put("", response_model=BillingSettingsResponse)
 def update_settings(
     data: BillingSettingsUpdate,
     db: Session = Depends(get_db),
@@ -54,11 +65,32 @@ def update_settings(
     settings.default_gst = data.default_gst
     settings.printer_layout = data.printer_layout
 
+    # Write-only, and only when actually sent — None means "leave
+    # whatever's already saved alone", so saving printer_layout from the
+    # existing settings screen can never silently wipe a connected
+    # Razorpay account. An empty string IS accepted as "disconnect".
+    if data.razorpay_key_id is not None:
+        settings.razorpay_key_id = data.razorpay_key_id or None
+    if data.razorpay_key_secret is not None:
+        settings.razorpay_key_secret = data.razorpay_key_secret or None
+    if data.razorpay_webhook_secret is not None:
+        settings.razorpay_webhook_secret = data.razorpay_webhook_secret or None
+
     # Onboarding step 3 complete — set-once, never unset (see
     # shop_routes.update_store_settings for the same reasoning).
     if not current_shop.onboarding_billing_done:
         current_shop.onboarding_billing_done = True
 
     db.commit()
+    db.refresh(settings)
 
-    return {"message": "Billing settings updated"}
+    # Same explicit construction as GET — never let key_secret/webhook_secret
+    # leak back out, even in the save-confirmation response.
+    return BillingSettingsResponse(
+        default_gst=settings.default_gst,
+        printer_layout=settings.printer_layout,
+        razorpay_key_id=settings.razorpay_key_id,
+        razorpay_configured=bool(
+            settings.razorpay_key_id and settings.razorpay_key_secret and settings.razorpay_webhook_secret
+        ),
+    )

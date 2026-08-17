@@ -33,6 +33,36 @@ class Bill(Base):
     total_items = Column(Float, nullable=False, default=0.0)
     payment_method = Column(String, nullable=False, default="Cash")
 
+    # ── Customer-facing UPI payment link (v52) ──
+    # Set when a "Send to customer" Razorpay Payment Link is created for
+    # this bill. payment_status stays independent of payment_method above
+    # — payment_method records how the SALE was recorded at checkout
+    # (Cash/Card/UPI/Credit), while payment_status tracks whether the
+    # SEPARATE customer-facing pay-later link has actually been paid.
+    # "unpaid" is the default for every bill, including ones that never
+    # get a link sent at all.
+    payment_status = Column(String, nullable=False, default="unpaid")
+    razorpay_payment_link_id = Column(String, nullable=True, index=True)
+    razorpay_payment_link_url = Column(String, nullable=True)
+    razorpay_payment_id = Column(String, nullable=True)
+
+    # ── Customer-facing UPI QR code (v66) ──
+    # Scan-to-pay in-person alternative to the payment link above — works
+    # on any device (no SIM needed, nothing gets sent anywhere, the
+    # screen just displays this). razorpay_qr_id is what the
+    # "qr_code.credited" webhook is matched back against (QR codes don't
+    # carry a reference_id the way Payment Links do). Whichever of the
+    # QR or the link gets paid first, the other is auto-closed
+    # server-side so the same bill can never be paid twice.
+    razorpay_qr_id = Column(String, nullable=True, index=True)
+    razorpay_qr_image_url = Column(String, nullable=True)
+    # Epoch seconds Razorpay itself will auto-close this QR at (their own
+    # `close_by`, echoed back on creation). create_qr must NOT reuse a
+    # saved razorpay_qr_id past this moment — Razorpay has already killed
+    # it server-side, so the cached image would be a dead code that can
+    # never be scanned/paid again. (v67)
+    razorpay_qr_close_by = Column(Integer, nullable=True)
+
     # ── GST Meta Data ──
     gst_scheme = Column(String, nullable=False, default="Regular")
     supply_type = Column(String, nullable=False, default="intrastate")

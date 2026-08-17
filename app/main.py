@@ -27,6 +27,7 @@ from app.routes.admin_catalog_routes import router as admin_catalog_router
 from app.routes.analytics_routes import router as analytics_router
 from app.routes import subscription_routes as subscription
 from app.routes import subscription_payment_routes
+from app.routes import pos_payment_routes
 from app.routes import gst_routes
 from app.routes.global_catalog_routes import router as global_catalog_router
 from app.routes.purchase_routes import router as purchase_router
@@ -203,6 +204,7 @@ app.include_router(admin_catalog_router)
 app.include_router(analytics_router)
 app.include_router(subscription.router)
 app.include_router(subscription_payment_routes.router)
+app.include_router(pos_payment_routes.router)
 app.include_router(credit.router)
 app.include_router(inventory_routes.router)
 app.include_router(sales_routes.router)
