@@ -121,8 +121,6 @@ def sync_purchases(
                 raise ValueError("supply_type must be intrastate or interstate")
             if p.cess_paid < 0:
                 raise ValueError("cess_paid must be >= 0")
-            if not p.eligibility_for_itc:
-                raise ValueError("eligibility_for_itc is required")
             if (p.availed_itc_integrated_tax < 0 or p.availed_itc_central_tax < 0 or
                     p.availed_itc_state_tax < 0 or p.availed_itc_cess < 0):
                 raise ValueError("availed ITC fields must be >= 0")
@@ -135,11 +133,6 @@ def sync_purchases(
                 raise ValueError("availed_itc_state_tax cannot exceed sgst_amount")
             if p.availed_itc_cess > p.cess_paid:
                 raise ValueError("availed_itc_cess cannot exceed cess_paid")
-
-            if p.eligibility_for_itc in ["Ineligible", "None"]:
-                if (p.availed_itc_integrated_tax != 0 or p.availed_itc_central_tax != 0 or
-                        p.availed_itc_state_tax != 0 or p.availed_itc_cess != 0):
-                    raise ValueError("availed ITC fields must be 0 when ineligible/None")
 
             # Item-level validation
             for item in p.items:
@@ -208,7 +201,6 @@ def sync_purchases(
                 purchase.invoice_type = p.invoice_type
                 purchase.supply_type = p.supply_type
                 purchase.cess_paid = p.cess_paid
-                purchase.eligibility_for_itc = p.eligibility_for_itc
                 purchase.availed_itc_integrated_tax = p.availed_itc_integrated_tax
                 purchase.availed_itc_central_tax = p.availed_itc_central_tax
                 purchase.availed_itc_state_tax = p.availed_itc_state_tax
@@ -247,7 +239,6 @@ def sync_purchases(
                     invoice_type=p.invoice_type,
                     supply_type=p.supply_type,
                     cess_paid=p.cess_paid,
-                    eligibility_for_itc=p.eligibility_for_itc,
                     availed_itc_integrated_tax=p.availed_itc_integrated_tax,
                     availed_itc_central_tax=p.availed_itc_central_tax,
                     availed_itc_state_tax=p.availed_itc_state_tax,
@@ -312,22 +303,38 @@ def sync_purchases(
                     sp.is_active = True
                     _apply_sales_tax_to_product(sp, item)
 
-                    inventory = db.query(Inventory).filter(
-                        Inventory.product_id == sp.id,
-                        Inventory.shop_id == current_shop.id
-                    ).first()
-                    if inventory:
-                        inventory.is_active = True
-                    else:
-                        inventory = Inventory(
-                            product_id=sp.id,
-                            shop_id=current_shop.id,
-                            current_stock=0.0,
-                            average_cost=0.0,
-                            is_active=True
-                        )
-                        db.add(inventory)
-                        db.flush()
+                    # Assets feature: "Capital goods" / "Input services" ITC
+                    # eligibility means this purchase line is a business asset,
+                    # not resale inventory — keep the ShopProduct row (for
+                    # record-keeping) but mark it not sellable and skip
+                    # creating/activating an Inventory row for it, mirroring
+                    # PurchaseRepository.doSave on the Android client. Any
+                    # other eligibility value ("Inputs", "Ineligible", "None")
+                    # keeps today's exact behaviour.
+                    is_asset = (
+                        item.eligibility_for_itc in ("Capital goods", "Input services")
+                        or item.is_raw_material
+                    )
+                    sp.is_sellable = not is_asset
+                    sp.is_raw_material = item.is_raw_material
+
+                    if not is_asset:
+                        inventory = db.query(Inventory).filter(
+                            Inventory.product_id == sp.id,
+                            Inventory.shop_id == current_shop.id
+                        ).first()
+                        if inventory:
+                            inventory.is_active = True
+                        else:
+                            inventory = Inventory(
+                                product_id=sp.id,
+                                shop_id=current_shop.id,
+                                current_stock=0.0,
+                                average_cost=0.0,
+                                is_active=True
+                            )
+                            db.add(inventory)
+                            db.flush()
 
                 db.add(
                     PurchaseItem(
@@ -359,7 +366,8 @@ def sync_purchases(
                         availed_itc_cess=item.availed_itc_cess,
                         hsn_description=hsn_desc,
                         official_uqc=item.official_uqc or "",
-                        supply_classification=item.supply_classification
+                        supply_classification=item.supply_classification,
+                        is_raw_material=item.is_raw_material
                     )
                 )
 
@@ -456,7 +464,8 @@ def get_my_purchases(
                 "availed_itc_cess": item.availed_itc_cess,
                 "hsn_description": item.hsn_description,
                 "official_uqc": item.official_uqc,
-                "supply_classification": item.supply_classification
+                "supply_classification": item.supply_classification,
+                "is_raw_material": item.is_raw_material
             })
 
         response.append({
@@ -483,7 +492,6 @@ def get_my_purchases(
             "invoice_type": p.invoice_type,
             "supply_type": p.supply_type,
             "cess_paid": p.cess_paid,
-            "eligibility_for_itc": p.eligibility_for_itc,
             "availed_itc_integrated_tax": p.availed_itc_integrated_tax,
             "availed_itc_central_tax": p.availed_itc_central_tax,
             "availed_itc_state_tax": p.availed_itc_state_tax,

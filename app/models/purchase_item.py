@@ -1,6 +1,6 @@
 # models/purchase_item.py
 
-from sqlalchemy import Column, Integer, String, Float, ForeignKey
+from sqlalchemy import Column, Integer, String, Float, ForeignKey, Boolean
 from app.database import Base
 
 
@@ -49,3 +49,10 @@ class PurchaseItem(Base):
     hsn_description = Column(String, nullable=False, default="")
     official_uqc = Column(String, nullable=False, default="")
     supply_classification = Column(String, nullable=False, default="TAXABLE")
+
+    # Raw-material toggle mirrored from the Android purchase line dialog's
+    # "This is a raw material" switch. Independent of eligibility_for_itc —
+    # GST reporting still reads eligibility_for_itc unchanged — but drives
+    # the same asset-like inventory gating (no stock, not sellable) as
+    # Capital goods/Input services eligibility. See purchase_routes.py.
+    is_raw_material = Column(Boolean, nullable=False, default=False)

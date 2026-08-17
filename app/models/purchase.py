@@ -47,7 +47,6 @@ class Purchase(Base):
     invoice_type = Column(String, nullable=False, default="Regular")
     supply_type = Column(String, nullable=False, default="intrastate")
     cess_paid = Column(Float, nullable=False, default=0.0)
-    eligibility_for_itc = Column(String, nullable=False, default="Inputs")
     availed_itc_integrated_tax = Column(Float, nullable=False, default=0.0)
     availed_itc_central_tax = Column(Float, nullable=False, default=0.0)
     availed_itc_state_tax = Column(Float, nullable=False, default=0.0)

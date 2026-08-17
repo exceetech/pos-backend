@@ -209,6 +209,8 @@ def add_to_shop(
         existing.official_uqc = (data.official_uqc or "").strip().upper() or None
         existing.hsn_description = data.hsn_description or None
         existing.cess_rate = data.cess_rate or 0.0
+        existing.is_sellable = data.is_sellable
+        existing.is_raw_material = data.is_raw_material
 
         db.commit()
         db.refresh(existing)
@@ -305,7 +307,9 @@ def add_to_shop(
         hsn_description=data.hsn_description or None,
         cess_rate=data.cess_rate or 0.0,
         supply_classification=data.supply_classification or "TAXABLE",
-        category=(data.category or "").strip()
+        category=(data.category or "").strip(),
+        is_sellable=data.is_sellable,
+        is_raw_material=data.is_raw_material
     )
 
     db.add(new_product)
@@ -352,6 +356,8 @@ def get_my_products(
         ShopProduct.is_active,
         ShopProduct.is_purchased,
         ShopProduct.is_tax_inclusive,
+        ShopProduct.is_sellable,
+        ShopProduct.is_raw_material,
         GlobalProduct.name
     ).join(
         GlobalProduct,
@@ -378,7 +384,9 @@ def get_my_products(
             "category": r.category or "",
             "is_active": r.is_active,
             "is_purchased": r.is_purchased,
-            "is_tax_inclusive": r.is_tax_inclusive
+            "is_tax_inclusive": r.is_tax_inclusive,
+            "is_sellable": r.is_sellable,
+            "is_raw_material": r.is_raw_material
         }
         for r in results
     ]
@@ -459,6 +467,8 @@ def update_shop_product(
     product.hsn_description  = data.hsn_description or None
     product.cess_rate        = data.cess_rate or 0.0
     product.supply_classification = data.supply_classification or "TAXABLE"
+    product.is_sellable      = data.is_sellable
+    product.is_raw_material  = data.is_raw_material
     # ── Category (v40): apply edits; blank leaves the value unchanged. ──
     if (data.category or "").strip():
         product.category = data.category.strip()
@@ -678,6 +688,8 @@ def _upsert_shop_product(
         existing.official_uqc     = (data.official_uqc or "").strip().upper() or None
         existing.hsn_description  = data.hsn_description or None
         existing.cess_rate        = data.cess_rate or 0.0
+        existing.is_sellable      = data.is_sellable
+        existing.is_raw_material  = data.is_raw_material
         db.flush()
         return existing.id
 
@@ -699,7 +711,9 @@ def _upsert_shop_product(
         hsn_description   = data.hsn_description or None,
         cess_rate         = data.cess_rate or 0.0,
         supply_classification = data.supply_classification or "TAXABLE",
-        category          = (data.category or "").strip()
+        category          = (data.category or "").strip(),
+        is_sellable       = data.is_sellable,
+        is_raw_material   = data.is_raw_material
     )
     db.add(sp)
     db.flush()

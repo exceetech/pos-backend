@@ -21,6 +21,21 @@ class ShopProduct(Base):
     is_purchased = Column(Boolean, default=False)
     is_tax_inclusive = Column(Boolean, default=False)
 
+    # Assets feature: true (default) for normal sellable resale inventory.
+    # False for purchase lines recorded purely for asset record-keeping —
+    # ITC eligibility "Capital goods" / "Input services" — which still get
+    # a ShopProduct row but must never appear in the sellable billing/POS
+    # catalog and never receive an Inventory row. See purchase_routes.py.
+    is_sellable = Column(Boolean, nullable=False, server_default="true", default=True)
+
+    # Raw-material toggle: true when this purchase line was tagged a raw
+    # material (e.g. flour, sugar) rather than an eligibility-driven asset.
+    # Independent of is_sellable/eligibility — GST classification (usually
+    # "Inputs") is unaffected — but shares the same asset-like inventory
+    # gating in purchase_routes.py (no stock, not sellable). Used purely to
+    # label rows "Raw material" instead of "Asset" on the Assets screen.
+    is_raw_material = Column(Boolean, nullable=False, server_default="false", default=False)
+
     # GST fields
     hsn_code = Column(String, nullable=True)
     default_gst_rate = Column(Float, default=0.0)

@@ -1081,11 +1081,14 @@ def get_gstr2(
         elif item.supply_classification == "NON_GST":
             ngst += item.taxable_amount or 0.0
         else:
-            # ITC eligibility, read from the purchase instead of assumed.
+            # ITC eligibility, read from the purchase item instead of assumed.
             #
             # Every row here used to declare itc_eligibility="Inputs" outright,
-            # even though Purchase.eligibility_for_itc exists and the import
-            # service / purchase return paths below already read it. Two
+            # even though each PurchaseItem carries its own eligibility_for_itc
+            # and the import service / purchase return paths below already
+            # read it. (The Purchase header used to carry a copy of this too,
+            # but that header-level column was unused and has been removed —
+            # this always read the line item, not the header.) Two
             # problems: capital goods and input services were reported as
             # Inputs, and — the costly one — a purchase marked Ineligible
             # (blocked credit under s.17(5): motor vehicles, food and
@@ -1095,7 +1098,7 @@ def get_gstr2(
             # When the credit is blocked the tax is still reported (it was
             # charged and paid) but the AVAILED amounts are forced to zero —
             # that is the distinction the ITC columns exist to make.
-            itc_elig = (p.eligibility_for_itc or "Inputs").strip() or "Inputs"
+            itc_elig = (item.eligibility_for_itc or "Inputs").strip() or "Inputs"
             itc_blocked = itc_elig.lower() in ("ineligible", "none")
             av_igst = 0.0 if itc_blocked else (item.availed_itc_igst or 0.0)
             av_cgst = 0.0 if itc_blocked else (item.availed_itc_cgst or 0.0)
@@ -1159,7 +1162,7 @@ def get_gstr2(
             (item.purchase_igst_percentage or 0.0)
         # Same treatment as B2B above: read the purchase's own eligibility, and
         # withhold the availed credit when it is blocked.
-        impg_elig = (p.eligibility_for_itc or "Inputs").strip() or "Inputs"
+        impg_elig = (item.eligibility_for_itc or "Inputs").strip() or "Inputs"
         impg_blocked = impg_elig.lower() in ("ineligible", "none")
         impg_list.append(Gstr2ImpgItem(
             port_code=p_imp.port_code or "",

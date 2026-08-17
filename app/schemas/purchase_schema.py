@@ -52,6 +52,7 @@ class PurchaseItemDto(BaseModel):
     hsn_description: str = ""
     official_uqc: str = ""
     supply_classification: str = "TAXABLE"
+    is_raw_material: bool = False
 
 
 class PurchaseDto(BaseModel):
@@ -89,7 +90,6 @@ class PurchaseDto(BaseModel):
     invoice_type: str = "Regular"
     supply_type: str = "intrastate"
     cess_paid: float = 0.0
-    eligibility_for_itc: str = "Inputs"
     availed_itc_integrated_tax: float = 0.0
     availed_itc_central_tax: float = 0.0
     availed_itc_state_tax: float = 0.0

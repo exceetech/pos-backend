@@ -28,6 +28,8 @@ class AddProductRequest(BaseModel):
     cess_rate: float = 0.0
     supply_classification: str = "TAXABLE"
     category: str = ""
+    is_sellable: bool = True
+    is_raw_material: bool = False
 
 class ProductResponse(BaseModel):
     id: int
@@ -83,6 +85,8 @@ class ShopProductDto(BaseModel):
     cess_rate: float = 0.0
     supply_classification: str = "TAXABLE"
     category: str = ""
+    is_sellable: bool = True
+    is_raw_material: bool = False
 
 class ShopProductSyncRequest(BaseModel):
     products: List[ShopProductDto]
