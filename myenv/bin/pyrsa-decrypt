@@ -1,4 +1,4 @@
-#!/Users/adeebfarhan/Desktop/eXCee/ExPOS/pos-backend/myenv/bin/python
+#!/Users/adeebfarhan/Desktop/expos/pos-backend/myenv/bin/python3.12
 # -*- coding: utf-8 -*-
 import re
 import sys

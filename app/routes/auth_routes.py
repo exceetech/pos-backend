@@ -107,6 +107,14 @@ def login(
     if not device_id:
         raise HTTPException(status_code=400, detail="Device ID missing")
 
+    # 🔥 Quick Unlock replay flag — set by the Android app's silent
+    # PIN/fingerprint-triggered login replay (QuickUnlockActivity), never
+    # by a real interactive email+password submission (MainActivity).
+    # Needed below so a Quick Unlock replay can never be the thing that
+    # (re)binds a device — only a real password login may do that. See
+    # the device-lock block for why this distinction matters.
+    is_quick_unlock_replay = request.headers.get("quick-unlock", "false").lower() == "true"
+
     shop = db.query(Shop).filter(Shop.email == form_data.username).first()
 
     if not shop:
@@ -134,8 +142,33 @@ def login(
     # 🔥 DEVICE LOCK LOGIC (NEW)
     # =====================================================
 
-    # First login → bind device
+    # No device bound yet — either this account has never logged in
+    # before, OR an admin explicitly reset its device association
+    # (POST /reset-device/{shop_id}, or a direct device_id=NULL). Those
+    # two cases must NOT be treated the same way:
+    #
+    #  • A real, interactive password login (is_quick_unlock_replay=False)
+    #    is a strong-enough proof of identity to (re)bind a fresh device
+    #    either way — this is the normal "first login" / "moved to a new
+    #    phone, reset the old binding, log in on the new one" path.
+    #
+    #  • A Quick Unlock replay (is_quick_unlock_replay=True) is a locally
+    #    silent PIN/fingerprint check, not a fresh interactive proof —
+    #    letting it silently rebind a device the moment an admin reset the
+    #    association would defeat the whole point of resetting it (the old
+    #    device would just re-claim the account on its very next unlock).
+    #    Reject it instead, forcing a real password login — the Android
+    #    app already responds to any login failure here by clearing that
+    #    account's local Quick Unlock (PIN/fingerprint/saved credentials)
+    #    and falling back to the full form, so this one 409 is what makes
+    #    "removed from the account picker until logged in again with the
+    #    password" actually happen.
     if not shop.device_id:
+        if is_quick_unlock_replay:
+            raise HTTPException(
+                status_code=409,
+                detail="Device access was reset — please sign in with your password"
+            )
         shop.device_id = device_id
         db.commit()
 

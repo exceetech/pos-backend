@@ -12,7 +12,7 @@ from sqlalchemy import or_, and_
 from sqlalchemy.orm import Session
 
 from app.database import get_db
-from app.dependencies import get_current_shop, require_premium_tier
+from app.dependencies import get_current_shop, get_current_shop_no_subscription, require_premium_tier
 from app.services.gst_service import INDIA_STATES
 from app.models.gst_profile import StoreGstProfile
 # GstSalesRecord retired (Report 3, C3) — table dropped, model deleted.
@@ -48,7 +48,7 @@ router = APIRouter(prefix="/gst", tags=["GST"])
 async def lookup_gstin(
     gstin: str,
     db: Session = Depends(get_db),
-    current_shop = Depends(get_current_shop)
+    current_shop = Depends(get_current_shop_no_subscription)
 ):
     gstin = gstin.strip().upper()
 
@@ -63,12 +63,14 @@ async def lookup_gstin(
 
         if response.status_code == 200:
             data = response.json()
+            dty = (data.get("dty") or "").strip()
+            scheme = "Composition" if "compos" in dty.lower() else "Regular"
 
             return {
                 "gstin": gstin,
                 "legal_name": data.get("lgnm", ""),
                 "trade_name": data.get("tradeName", ""),
-                "gst_scheme": data.get("dty", "Regular"),
+                "gst_scheme": scheme,
                 "registration_type": data.get("sts", "Active"),
                 "state_code": gstin[:2],
                 "address": data.get("adr", "")  # 🔥 FIX
@@ -107,8 +109,8 @@ def upsert_gst_profile(
         existing.gstin = data.gstin
         existing.legal_name = data.legal_name or existing.legal_name
         existing.trade_name = data.trade_name or existing.trade_name
-        existing.gst_scheme = data.gst_scheme or existing.gst_scheme
-        existing.registration_type = data.registration_type or existing.registration_type
+        existing.gst_scheme = data.gst_scheme or existing.gst_scheme or "Regular"
+        existing.registration_type = data.registration_type or existing.registration_type or "Active"
         existing.state_code = data.state_code or existing.state_code
         existing.address = data.address or existing.address   # 🔥 FIX
 
@@ -126,8 +128,8 @@ def upsert_gst_profile(
             gstin=data.gstin,
             legal_name=data.legal_name or "",
             trade_name=data.trade_name or "",
-            gst_scheme=data.gst_scheme or "",
-            registration_type=data.registration_type or "",
+            gst_scheme=data.gst_scheme or "Regular",
+            registration_type=data.registration_type or "Active",
             state_code=data.state_code or data.gstin[:2],
             address=data.address or "",   # 🔥 FIX
             sync_status="synced",
