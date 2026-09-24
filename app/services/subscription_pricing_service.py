@@ -15,6 +15,7 @@ from app.models.plan import Plan
 from app.models.coupon import Coupon
 from app.models.coupon_redemption import CouponRedemption
 from app.util.time_utils import utc_now
+from app.services import app_config_service
 
 
 def get_active_plan(db: Session, plan_code: str) -> Plan:
@@ -88,7 +89,7 @@ def compute_final_price(plan: Plan, coupon: Coupon | None) -> int:
     return subtotal
 
 
-def compute_pricing_breakdown(plan: Plan, coupon: Coupon | None, credit_paise: int = 0) -> dict:
+def compute_pricing_breakdown(db: Session, plan: Plan, coupon: Coupon | None, credit_paise: int = 0) -> dict:
     """
     Full charged-amount breakdown: plan price -> coupon discount ->
     upgrade credit -> 2% service charge -> 18% GST (service charge is
@@ -117,7 +118,14 @@ def compute_pricing_breakdown(plan: Plan, coupon: Coupon | None, credit_paise: i
 
     service_charge = round(payable * (SERVICE_CHARGE_PERCENT / 100.0))
     taxable = payable + service_charge
-    gst = round(taxable * (GST_PERCENT / 100.0))
+    
+    gst_enabled = app_config_service.get_config_bool(db, "sub_gst_enabled")
+    if gst_enabled:
+        gst_percent = float(app_config_service.get_config(db, "sub_gst_percent"))
+        gst = round(taxable * (gst_percent / 100.0))
+    else:
+        gst = 0
+        
     final = taxable + gst
 
     return {

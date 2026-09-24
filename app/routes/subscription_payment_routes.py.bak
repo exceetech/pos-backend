@@ -1,4 +1,3 @@
-from pydantic import BaseModel
 """
 Razorpay-backed subscription purchase flow — plan selection, coupon
 validation, order creation, and payment verification.

@@ -233,3 +233,21 @@ def restore_shop(archived_shop_id: int, db: Session = Depends(get_db)):
         "archived_shop_id":  active_shop.id if active_shop else None,
         "workspace_version": next_version,
     }
+
+from pydantic import BaseModel
+
+class AdminConfigUpdateRequest(BaseModel):
+    key: str
+    value: str
+
+@router.post("/admin/config")
+def update_config(request: AdminConfigUpdateRequest, db: Session = Depends(get_db)):
+    """
+    Update a global app_config key. 
+    Examples:
+    key: "sub_gst_enabled", value: "true" or "false"
+    key: "sub_gst_percent", value: "18.0"
+    """
+    from app.services.app_config_service import set_config
+    set_config(db, request.key, request.value)
+    return {"message": f"Config '{request.key}' updated to '{request.value}' successfully."}

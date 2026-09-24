@@ -173,8 +173,8 @@ def admin_extend_subscription(
     extra_days: int,
     db: Session = Depends(get_db)
 ):
-    if extra_days <= 0:
-        return {"error": "extra_days must be positive"}
+    if extra_days == 0:
+        return {"error": "extra_days must be non-zero (can be negative to remove days)"}
 
     sub = db.query(Subscription).filter(Subscription.shop_id == shop_id).first()
     if not sub:
@@ -186,13 +186,10 @@ def admin_extend_subscription(
     # that still has weeks left.
     base = max(sub.expiry_date, utc_now()) if sub.expiry_date else utc_now()
     sub.expiry_date = base + timedelta(days=extra_days)
-    # Re-derive status from the shared classifier now that expiry_date
-    # has moved into the future, instead of a local copy of the same
-    # "was expired, now isn't" rule — resolve_entitlement_state's
-    # explicit-status-override check (see subscription_entitlement_
-    # service) also means this correctly un-sticks a refund-expired
-    # subscription, not just a time-expired one.
-    if sub.status == "expired":
+
+    if sub.expiry_date <= utc_now():
+        sub.status = "expired"
+    elif sub.status == "expired":
         sub.status = "trial" if sub.plan == "trial" else "active"
     db.commit()
 

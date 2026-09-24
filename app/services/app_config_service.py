@@ -24,6 +24,8 @@ DEFAULTS = {
     # to count as current. Bump this to force re-acceptance after a
     # terms update.
     "required_terms_version": "1.0",
+    "sub_gst_enabled": "false",
+    "sub_gst_percent": "18.0",
 }
 
 
