@@ -102,6 +102,7 @@ class ShopProductSyncResponse(BaseModel):
 class GlobalProductRegisterRequest(BaseModel):
     name: str
     variant: Optional[str] = None
+    brand: Optional[str] = None
     unit: Optional[str] = None
     hsn_code: Optional[str] = None
     hsn_description: Optional[str] = None
@@ -120,5 +121,6 @@ class GlobalProductRegisterResponse(BaseModel):
     global_id: Optional[int] = None
     name: str
     variant: Optional[str] = None
+    brand: Optional[str] = None
     hsn_code: Optional[str] = None
     message: Optional[str] = None

@@ -7,6 +7,7 @@ class VariantResponse(BaseModel):
     product_id: int
     variant_name: str
     unit: str
+    brand: Optional[str] = None
 
     # Statutory autofill fields (safe to share). Price is intentionally
     # never returned — it is per-shop.

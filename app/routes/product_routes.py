@@ -155,6 +155,8 @@ def _apply_variant_fields(v, data, unit_clean: str) -> bool:
 
     if unit_clean != "unit" and (not v.unit or v.unit == "unit"):
         _set("unit", unit_clean)
+    if getattr(data, "brand", None) and data.brand.strip():
+        _set("brand", data.brand.strip())
     if data.hsn_code and data.hsn_code.strip():
         _set("hsn_code", data.hsn_code.strip())
     if data.hsn_description and data.hsn_description.strip():
@@ -590,6 +592,7 @@ def register_global_product(
                     product_id=gp.id,
                     variant_name=variant_key,
                     unit=unit_clean,
+                    brand=(data.brand.strip() if getattr(data, "brand", None) else None),
                     is_verified=False,
                     created_by_shop_id=current_shop.id,
                     hsn_code=(data.hsn_code.strip() if data.hsn_code else None),
@@ -639,6 +642,7 @@ def register_global_product(
         global_id=gp.id,
         name=normalized,
         variant=data.variant,
+        brand=data.brand,
         hsn_code=data.hsn_code,
         message="Registered"
     )

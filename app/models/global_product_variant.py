@@ -19,6 +19,7 @@ class GlobalProductVariant(Base):
 
     variant_name = Column(String, nullable=False)
     unit = Column(String, default="unit")
+    brand = Column(String, nullable=True)
 
     is_verified = Column(Boolean, default=False)
 
