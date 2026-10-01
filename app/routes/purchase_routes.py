@@ -89,6 +89,8 @@ def _apply_sales_tax_to_product(sp: ShopProduct | None, item) -> None:
         sp.default_gst_rate = sales_combined
     if item.hsn_code:
         sp.hsn_code = item.hsn_code
+    if getattr(item, "cess_percentage", 0.0) and item.cess_percentage > 0:
+        sp.cess_rate = item.cess_percentage
 
 
 @router.post("/sync", response_model=PurchaseSyncResponse)

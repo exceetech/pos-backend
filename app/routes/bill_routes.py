@@ -533,6 +533,7 @@ def get_bills_since(
             "cgst_amount": b.cgst_amount,
             "sgst_amount": b.sgst_amount,
             "igst_amount": b.igst_amount,
+            "cess_amount": b.cess_amount,
             "is_cancelled": bool(b.is_cancelled),
             "cancelled_at": local_to_epoch_ms(b.cancelled_at) if b.cancelled_at else None,
             "created_at": str(b.created_at),
@@ -550,6 +551,7 @@ def get_bills_since(
                     "cgst_amount": it.cgst_amount,
                     "sgst_amount": it.sgst_amount,
                     "igst_amount": it.igst_amount,
+                    "cess_amount": it.cess_amount,
                     "total_amount": it.total_amount,
                     "hsn_code": it.hsn_code,
                 }

@@ -264,6 +264,11 @@ def b2cl_threshold_for(period_start: datetime) -> float:
     return _B2CL_THRESHOLD_NEW if period_start >= _B2CL_CUTOVER else _B2CL_THRESHOLD_OLD
 
 
+def effective_rate(item) -> float:
+    cgst_sgst = (item.sales_cgst_percentage or 0.0) + (item.sales_sgst_percentage or 0.0)
+    return round((item.sales_igst_percentage or 0.0) if (item.sales_igst_percentage or 0.0) > 0.0 else cgst_sgst, 2)
+
+
 @router.get("/reports/gstr1", response_model=Gstr1Response)
 def get_gstr1(
     start_date: str = Query(..., description="YYYY-MM-DD"),
@@ -1016,6 +1021,7 @@ def get_gstr2(
     total_itc_cgst = 0.0
     total_itc_sgst = 0.0
     total_itc_igst = 0.0
+    total_itc_cess = 0.0
 
     comp = 0.0
     nil = 0.0
@@ -1156,6 +1162,7 @@ def get_gstr2(
             total_itc_cgst += av_cgst
             total_itc_sgst += av_sgst
             total_itc_igst += av_igst
+            total_itc_cess += av_cess
 
     # 2. IMPG
     for p, item, p_imp in import_goods_query:
@@ -1166,6 +1173,8 @@ def get_gstr2(
         # withhold the availed credit when it is blocked.
         impg_elig = (item.eligibility_for_itc or "Inputs").strip() or "Inputs"
         impg_blocked = impg_elig.lower() in ("ineligible", "none")
+        impg_av_igst = 0.0 if impg_blocked else (item.availed_itc_igst or 0.0)
+        impg_av_cess = 0.0 if impg_blocked else (item.availed_itc_cess or 0.0)
         impg_list.append(Gstr2ImpgItem(
             port_code=p_imp.port_code or "",
             bill_of_entry_number=p_imp.bill_of_entry_number or "",
@@ -1178,9 +1187,11 @@ def get_gstr2(
             igst=item.purchase_igst_amount or 0.0,
             cess=item.cess_amount or 0.0,
             itc_eligibility=impg_elig,
-            availed_itc_igst=0.0 if impg_blocked else (item.availed_itc_igst or 0.0),
-            availed_itc_cess=0.0 if impg_blocked else (item.availed_itc_cess or 0.0)
+            availed_itc_igst=impg_av_igst,
+            availed_itc_cess=impg_av_cess
         ))
+        total_itc_igst += impg_av_igst
+        total_itc_cess += impg_av_cess
 
     # 3. IMPS
     for im in imports_query:
@@ -1209,6 +1220,7 @@ def get_gstr2(
         ))
         total_taxable_value += im.taxable_value or 0.0
         total_itc_igst += imps_av_igst
+        total_itc_cess += imps_av_cess
 
     # 4. CDNR & CDNUR
     for r in returns_query:
@@ -1249,6 +1261,7 @@ def get_gstr2(
         total_itc_igst -= ret_av_igst
         total_itc_cgst -= ret_av_cgst
         total_itc_sgst -= ret_av_sgst
+        total_itc_cess -= ret_av_cess
 
         if is_registered:
             cdnr_list.append(Gstr2CdnrItem(
@@ -1339,7 +1352,8 @@ def get_gstr2(
         total_taxable_value=round(total_taxable_value, 2),
         total_itc_cgst=round(total_itc_cgst, 2),
         total_itc_sgst=round(total_itc_sgst, 2),
-        total_itc_igst=round(total_itc_igst, 2)
+        total_itc_igst=round(total_itc_igst, 2),
+        total_itc_cess=round(total_itc_cess, 2)
     )
 
 # ============================================================
@@ -1377,37 +1391,51 @@ def get_hsn_summary(
     # route that has now been removed — see Report 3 dead-code notes.)
     hsn_agg: dict = {}
     for _inv, item in get_active_invoice_line_items(db, current_shop.id, start, end):
-        key = (item.hsn_code or "", item.uqc)
+        key = ((item.hsn_code or "").strip(), item.uqc or "NOS", effective_rate(item), item.hsn_description or item.product_name)
         if key not in hsn_agg:
             hsn_agg[key] = {
-                "hsn_code": item.hsn_code or "",
+                "hsn_code": (item.hsn_code or "").strip(),
+                "description": item.hsn_description or item.product_name or "",
                 "uom": (item.uqc or "NOS").upper(),
                 "total_quantity": 0.0,
+                "value": 0.0,
                 "taxable_value": 0.0,
                 "cgst_amount": 0.0,
                 "sgst_amount": 0.0,
                 "igst_amount": 0.0,
+                "cess_amount": 0.0,
+                "rate": effective_rate(item),
             }
         agg = hsn_agg[key]
         agg["total_quantity"] += item.quantity or 0.0
+        agg["value"] += item.net_value or 0.0
         agg["taxable_value"] += item.taxable_amount or 0.0
         agg["cgst_amount"] += item.cgst_amount or 0.0
         agg["sgst_amount"] += item.sgst_amount or 0.0
         agg["igst_amount"] += item.igst_amount or 0.0
+        agg["cess_amount"] += item.cess_amount or 0.0
 
-    return [
-        {
+    rows = []
+    for agg in hsn_agg.values():
+        total_tax = round(agg["cgst_amount"] + agg["sgst_amount"] + agg["igst_amount"] + agg["cess_amount"], 2)
+        total_value = agg["value"] if agg["value"] else (
+            agg["taxable_value"] + agg["cgst_amount"] + agg["sgst_amount"] + agg["igst_amount"] + agg["cess_amount"]
+        )
+        rows.append({
             "hsn_code": agg["hsn_code"],
+            "description": agg["description"],
             "uom": agg["uom"],
             "total_quantity": round(agg["total_quantity"], 3),
             "taxable_value": round(agg["taxable_value"], 2),
             "cgst_amount": round(agg["cgst_amount"], 2),
             "sgst_amount": round(agg["sgst_amount"], 2),
             "igst_amount": round(agg["igst_amount"], 2),
-            "total_tax": round(agg["cgst_amount"] + agg["sgst_amount"] + agg["igst_amount"], 2)
-        }
-        for agg in hsn_agg.values()
-    ]
+            "total_tax": total_tax,
+            "total_value": round(total_value, 2),
+            "cess_amount": round(agg["cess_amount"], 2),
+            "rate": agg["rate"]
+        })
+    return rows
 
 
 # ============================================================

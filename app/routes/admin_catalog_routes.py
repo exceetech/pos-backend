@@ -37,6 +37,7 @@ class UnverifiedVariantOut(BaseModel):
     # never send this back as variant_name to the edit endpoint.
     label: str = ""
     unit: str
+    brand: Optional[str] = None
     hsn_code: Optional[str] = None
     hsn_description: Optional[str] = None
     official_uqc: Optional[str] = None
@@ -54,6 +55,8 @@ class EditVariantRequest(BaseModel):
     # EXPLICIT edit, kept separate from verify so approving can never
     # rewrite data by accident.
     variant_name: Optional[str] = None
+    brand: Optional[str] = None
+    unit: Optional[str] = None
     hsn_code: Optional[str] = None
     hsn_description: Optional[str] = None
     official_uqc: Optional[str] = None
@@ -81,6 +84,7 @@ def list_unverified_variants(db: Session = Depends(get_db)):
             variant_name=v.variant_name,
             label=(v.variant_name or "(no variant)"),
             unit=v.unit,
+            brand=v.brand,
             hsn_code=v.hsn_code,
             hsn_description=v.hsn_description,
             official_uqc=v.official_uqc,
@@ -185,6 +189,10 @@ def edit_variant(
             )
         variant.variant_name = cleaned
 
+    if data.brand is not None:
+        variant.brand = data.brand.strip() or None
+    if data.unit is not None:
+        variant.unit = data.unit.strip() or None
     if data.hsn_code is not None:
         variant.hsn_code = data.hsn_code.strip() or None
     if data.hsn_description is not None:

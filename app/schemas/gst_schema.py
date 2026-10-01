@@ -420,6 +420,7 @@ class Gstr2Response(BaseModel):
     total_itc_cgst: float
     total_itc_sgst: float
     total_itc_igst: float
+    total_itc_cess: float = 0.0
 
 
 # GSTR-3B removed — not needed for this app (was reading stale/orphaned

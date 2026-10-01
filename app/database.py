@@ -18,13 +18,18 @@ DATABASE_URL = os.getenv("DATABASE_URL")
 # multiple instances can spin up under load, so this is worth being
 # deliberate about rather than inheriting whatever the default happens
 # to be.
+engine_kwargs = {"pool_pre_ping": True}
+if DATABASE_URL and not DATABASE_URL.startswith("sqlite"):
+    engine_kwargs.update({
+        "pool_size": 5,
+        "max_overflow": 10,
+        "pool_recycle": 1800,
+    })
+
 engine = create_engine(
     DATABASE_URL,
-    pool_pre_ping=True,
-    pool_size=5,
-    max_overflow=10,
-    pool_recycle=1800,
-)
+    **engine_kwargs
+) if DATABASE_URL else None
 
 SessionLocal = sessionmaker(
     autocommit=False,
