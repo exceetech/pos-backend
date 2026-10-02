@@ -488,3 +488,235 @@ def get_profit(
         "summary": summary_data,
         "products": list(product_map.values())
     }
+
+
+# ============================================================================
+# PROFIT TREND CHART
+# ============================================================================
+# Bucketed profit for the trend chart on the Profit Analytics page's chart
+# screen. Same five period words as GET /profit ("today", "week", "month",
+# "all", "custom"), and the exact same profit formula used there
+# (revenue - cost - loss - purchase_return_variance, Expense never
+# subtracted) -- summed PER BUCKET instead of once for the whole period, so
+# the bars always add up to the same total already shown on the main
+# Profit Analytics screen. Optional product_id scopes every bucket to one
+# product instead of the whole shop.
+#
+# Bucketing (see expos-profit-trend-chart-plan.md for the full plan this
+# implements):
+#   today  -> 24 hourly buckets for the current calendar day
+#   week   -> 7 daily buckets, Monday -> Sunday of the current week
+#   month  -> one bucket per calendar day in the current month
+#   all    -> one bucket per calendar month, from the month the shop was
+#             registered (Shop.created_at) through the current month
+#   custom -> one bucket per calendar day between start_date and end_date,
+#             clamped so it can never start before the shop was registered
+#             or end after today
+# ============================================================================
+
+_MONTH_NAMES = ["Jan", "Feb", "Mar", "Apr", "May", "Jun",
+                "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+_HOUR_LABELS = (
+    ["12 AM"] + [f"{h} AM" for h in range(1, 12)] +
+    ["12 PM"] + [f"{h} PM" for h in range(1, 12)]
+)
+_DAY_LABELS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+
+
+def _month_add(dt: datetime, months: int) -> datetime:
+    """dt moved forward by `months` whole calendar months, day fixed to 1."""
+    total = dt.month - 1 + months
+    year = dt.year + total // 12
+    month = total % 12 + 1
+    return dt.replace(year=year, month=month, day=1, hour=0, minute=0, second=0, microsecond=0)
+
+
+def _build_trend_buckets(filter: str, now: datetime, shop_created_at: datetime,
+                          start_date: str = None, end_date: str = None):
+    """Returns (buckets, overall_start, overall_end). buckets is a list of
+    (label, bucket_start, bucket_end) tuples, bucket_end exclusive."""
+
+    buckets = []
+
+    if filter == "today":
+        day_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        for h in range(24):
+            b_start = day_start + timedelta(hours=h)
+            buckets.append((_HOUR_LABELS[h], b_start, b_start + timedelta(hours=1)))
+        return buckets, day_start, day_start + timedelta(days=1)
+
+    if filter == "week":
+        monday = now - timedelta(days=now.weekday())
+        week_start = monday.replace(hour=0, minute=0, second=0, microsecond=0)
+        for i in range(7):
+            b_start = week_start + timedelta(days=i)
+            buckets.append((_DAY_LABELS[i], b_start, b_start + timedelta(days=1)))
+        return buckets, week_start, week_start + timedelta(days=7)
+
+    if filter == "month":
+        month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+        next_month = _month_add(month_start, 1)
+        days_in_month = (next_month - month_start).days
+        for d in range(days_in_month):
+            b_start = month_start + timedelta(days=d)
+            buckets.append((str(d + 1), b_start, b_start + timedelta(days=1)))
+        return buckets, month_start, next_month
+
+    if filter == "all":
+        shop_month_start = shop_created_at.replace(
+            day=1, hour=0, minute=0, second=0, microsecond=0)
+        cur_month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+
+        m = shop_month_start
+        while m <= cur_month_start:
+            m_end = _month_add(m, 1)
+            label = _MONTH_NAMES[m.month - 1]
+            if m.year != now.year:
+                label = f"{label} {m.year}"
+            buckets.append((label, m, m_end))
+            m = m_end
+        overall_end = buckets[-1][2] if buckets else cur_month_start
+        return buckets, shop_month_start, overall_end
+
+    if filter == "custom" and start_date and end_date:
+        shop_day = shop_created_at.replace(hour=0, minute=0, second=0, microsecond=0)
+        today_day = now.replace(hour=0, minute=0, second=0, microsecond=0)
+
+        start = datetime.strptime(start_date, "%Y-%m-%d")
+        end = datetime.strptime(end_date, "%Y-%m-%d")
+
+        # Guardrail: never before the shop was registered, never after today.
+        if start < shop_day:
+            start = shop_day
+        if end > today_day:
+            end = today_day
+        if end < start:
+            end = start
+
+        d = start
+        while d <= end:
+            buckets.append((d.strftime("%-d %b"), d, d + timedelta(days=1)))
+            d += timedelta(days=1)
+        overall_end = buckets[-1][2] if buckets else start + timedelta(days=1)
+        return buckets, start, overall_end
+
+    # Unknown filter -> no buckets.
+    return [], now, now
+
+
+def _profit_for_range(db: Session, shop_id: int, start: datetime, end: datetime,
+                       product_id: int = None):
+    """Revenue/cost/loss/profit for one [start, end) slice, optionally scoped
+    to one product. Mirrors GET /profit's own summary math exactly (never
+    subtracts Expense)."""
+
+    sales_q = db.query(
+        func.coalesce(func.sum(SaleItem.total_revenue), 0.0),
+        func.coalesce(func.sum(SaleItem.total_cost), 0.0)
+    ).filter(
+        SaleItem.shop_id == shop_id,
+        SaleItem.created_at >= start,
+        SaleItem.created_at < end
+    )
+    if product_id is not None:
+        sales_q = sales_q.filter(SaleItem.product_id == product_id)
+    revenue, cost = sales_q.one()
+    revenue = float(revenue or 0.0)
+    cost = float(cost or 0.0)
+
+    # Customer returns (note_type "C") shrink revenue/cost; Debit Notes
+    # ("D" -- extra units billed after the fact) grow them. Same join/active
+    # bill filter as GET /profit.
+    returns_q = db.query(
+        CreditNoteItem.taxable_value,
+        CreditNoteItem.cost_price_used,
+        CreditNote.note_type
+    ).join(
+        CreditNote, CreditNote.id == CreditNoteItem.note_id
+    ).outerjoin(
+        Bill, CreditNote.original_invoice_number == Bill.bill_number
+    ).filter(
+        CreditNote.shop_id == shop_id,
+        CreditNote.created_at >= start,
+        CreditNote.created_at < end,
+        or_(
+            Bill.id == None,
+            and_(Bill.active == True, Bill.is_cancelled == False)
+        )
+    )
+    if product_id is not None:
+        returns_q = returns_q.filter(CreditNoteItem.product_id == product_id)
+
+    for taxable_value, cost_price_used, note_type in returns_q.all():
+        sign = -1.0 if note_type == "C" else (1.0 if note_type == "D" else 0.0)
+        revenue += sign * float(taxable_value or 0.0)
+        cost += sign * float(cost_price_used or 0.0)
+
+    loss_q = db.query(
+        func.coalesce(func.sum(InventoryLog.quantity * InventoryLog.price), 0.0)
+    ).filter(
+        InventoryLog.shop_id == shop_id,
+        InventoryLog.is_active == True,
+        InventoryLog.type == "LOSS",
+        InventoryLog.created_at >= start,
+        InventoryLog.created_at < end
+    )
+    if product_id is not None:
+        loss_q = loss_q.filter(InventoryLog.product_id == product_id)
+    loss = float(loss_q.scalar() or 0.0)
+
+    variance_q = db.query(
+        func.coalesce(func.sum(PurchaseReturn.inventory_valuation_variance), 0.0)
+    ).filter(
+        PurchaseReturn.shop_id == shop_id,
+        PurchaseReturn.note_type == "D",
+        PurchaseReturn.created_at >= start,
+        PurchaseReturn.created_at < end
+    )
+    if product_id is not None:
+        variance_q = variance_q.filter(PurchaseReturn.shop_product_id == product_id)
+    variance = float(variance_q.scalar() or 0.0)
+
+    profit = revenue - cost - loss - variance
+
+    return {
+        "revenue": round(revenue, 2),
+        "cost": round(cost, 2),
+        "loss": round(loss, 2),
+        "profit": round(profit, 2)
+    }
+
+
+@router.get("/trend")
+def get_profit_trend(
+    filter: str = "today",
+    start_date: str = None,
+    end_date: str = None,
+    product_id: int = None,
+    db: Session = Depends(get_db),
+    current_shop: Shop = Depends(require_premium_tier)
+):
+    now = local_now()
+    shop_created_at = current_shop.created_at or now
+
+    buckets, overall_start, overall_end = _build_trend_buckets(
+        filter, now, shop_created_at, start_date, end_date
+    )
+
+    bucket_results = []
+    for label, b_start, b_end in buckets:
+        figures = _profit_for_range(db, current_shop.id, b_start, b_end, product_id)
+        bucket_results.append({
+            "label": label,
+            "start": b_start.isoformat(),
+            "end": b_end.isoformat(),
+            **figures
+        })
+
+    total_profit = round(sum(b["profit"] for b in bucket_results), 2)
+
+    return {
+        "filter": filter,
+        "buckets": bucket_results,
+        "total_profit": total_profit
+    }
