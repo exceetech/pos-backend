@@ -13,6 +13,14 @@ from app.dependencies import require_premium_tier
 from app.models.shop import Shop
 from app.models.credit_note import CreditNote, CreditNoteItem
 from app.models.purchase_return import PurchaseReturn
+from app.models.sale_allocation import CostCorrectionClaim
+from sqlalchemy import select
+
+
+def _claim_not_archived(shop_id):
+    """Leave out claims whose sale bill was archived with "Clear bills"."""
+    archived = select(Bill.bill_number).where(Bill.shop_id == shop_id, Bill.active == False)  # noqa: E712
+    return or_(CostCorrectionClaim.bill_number.is_(None), CostCorrectionClaim.bill_number.notin_(archived))
 
 router = APIRouter(prefix="/profit", tags=["Profit"])
 
@@ -91,7 +99,7 @@ def get_profit(
                 "product_id": pid,
                 "product_name": s.product_name,
                 "variant": s.variant,
-                "unit": product.unit,
+                "unit": product.unit if product else "unit",
                 "qty": 0.0,
                 "revenue": 0.0,
                 "cost": 0.0,
@@ -333,7 +341,12 @@ def get_profit(
         # sign fix); "RETURN" is kept in this filter for backward
         # compatibility with rows synced before that change and is otherwise
         # unused by any current write path.
-        purchase_return_qty = sum(l.quantity for l in logs if l.type in ("RETURN", "PURCHASE_RETURN"))
+        # Phase 1 (QDN): quantity corrections move stock like an add / a
+        # return. COST_ADJUST (price notes) has quantity 0 and is ignored
+        # here on purpose. They are NOT "ADD", so Expense is untouched by
+        # them - their money is already in the net-of-notes Expense below.
+        purchase_return_qty = sum(l.quantity for l in logs if l.type in ("RETURN", "PURCHASE_RETURN", "QTY_CORR_REDUCE"))
+        qty_corr_add = sum(l.quantity for l in logs if l.type == "QTY_CORR_ADD")
 
         sold = product_map[pid]["qty"]
 
@@ -358,7 +371,8 @@ def get_profit(
             post_add = sum(l.quantity for l in logs if l.type == "ADD" and l.created_at > anchor_time)
             post_restock = sum(l.quantity for l in logs if l.type == "CANCEL_RESTOCK" and l.created_at > anchor_time)
             post_loss_qty = sum(l.quantity for l in logs if l.type == "LOSS" and l.created_at > anchor_time)
-            post_return_qty = sum(l.quantity for l in logs if l.type in ("RETURN", "PURCHASE_RETURN") and l.created_at > anchor_time)
+            post_return_qty = sum(l.quantity for l in logs if l.type in ("RETURN", "PURCHASE_RETURN", "QTY_CORR_REDUCE") and l.created_at > anchor_time)
+            post_qty_corr_add = sum(l.quantity for l in logs if l.type == "QTY_CORR_ADD" and l.created_at > anchor_time)
             post_sales_return = sum(l.quantity for l in logs if l.type == "SALES_RETURN" and l.created_at > anchor_time)
 
             # "sold" above is the WHOLE period's sold quantity (correct for
@@ -374,9 +388,9 @@ def get_profit(
                 post_sold_query = post_sold_query.filter(SaleItem.created_at < end)
             post_sold = post_sold_query.scalar() or 0.0
 
-            remaining = anchor_qty + post_add + post_restock + post_sales_return - post_sold - post_loss_qty - post_return_qty
+            remaining = anchor_qty + post_add + post_restock + post_qty_corr_add + post_sales_return - post_sold - post_loss_qty - post_return_qty
         else:
-            remaining = added + restock_qty - sold - loss_qty - purchase_return_qty
+            remaining = added + restock_qty + qty_corr_add - sold - loss_qty - purchase_return_qty
 
         product_map[pid]["added"] = added
         product_map[pid]["sold"] = sold
@@ -398,16 +412,41 @@ def get_profit(
     # 0.0 on a Credit Note). Positive = loss, negative = gain, so it's
     # subtracted the same way total_loss is: a loss reduces profit, a
     # gain (negative variance) increases it.
+    # Phase 1 (PDN): every note kind, in both directions, carries its own
+    # signed variance (a price note's "gone" part). Credit Notes of the
+    # old kind store 0.0, so including them changes nothing for old data.
     purchase_return_variance_query = db.query(
         func.sum(PurchaseReturn.inventory_valuation_variance)
     ).filter(
-        PurchaseReturn.shop_id == current_shop.id,
-        PurchaseReturn.note_type == "D"
+        PurchaseReturn.shop_id == current_shop.id
     )
     purchase_return_variance_query = apply_date_filter(
         purchase_return_variance_query, PurchaseReturn.created_at
     )
     total_purchase_return_variance = purchase_return_variance_query.scalar() or 0.0
+
+    # Stage 3D: customer returns / cancelled sales of pens sold BEFORE a price
+    # correction take back part of that correction's gain or loss. Same sign
+    # as the note variance (positive = loss), dated by the claim date.
+    claim_variance_query = db.query(func.sum(CostCorrectionClaim.amount)).filter(
+        CostCorrectionClaim.shop_id == current_shop.id,
+        _claim_not_archived(current_shop.id)
+    )
+    claim_variance_query = apply_date_filter(claim_variance_query, CostCorrectionClaim.claim_date)
+    total_purchase_return_variance += claim_variance_query.scalar() or 0.0
+
+    # Stage-1 fix P0-5: "Expense" = money actually spent on purchases, so it
+    # must be net of correction notes: D (return) lowers it, C (addition)
+    # raises it. Profit is NOT touched here (variance already covers P&L).
+    _note_rows = apply_date_filter(
+        db.query(PurchaseReturn.note_type, func.sum(PurchaseReturn.note_refund_voucher_value))
+        .filter(PurchaseReturn.shop_id == current_shop.id)
+        .group_by(PurchaseReturn.note_type),
+        PurchaseReturn.created_at
+    ).all()
+    for _nt, _val in _note_rows:
+        _val = _val or 0.0
+        total_expense += _val if (_nt or "D").upper() == "C" else -_val
 
     final_profit = total_revenue - total_cost - total_loss - total_purchase_return_variance
 
@@ -455,9 +494,14 @@ def get_profit(
             func.sum(PurchaseReturn.inventory_valuation_variance)
         ).filter(
             PurchaseReturn.shop_id == current_shop.id,
-            PurchaseReturn.note_type == "D",
             PurchaseReturn.created_at >= prev_start,
             PurchaseReturn.created_at < prev_end
+        ).scalar() or 0.0
+        prev_purchase_return_variance += db.query(func.sum(CostCorrectionClaim.amount)).filter(
+            CostCorrectionClaim.shop_id == current_shop.id,
+            _claim_not_archived(current_shop.id),
+            CostCorrectionClaim.claim_date >= prev_start,
+            CostCorrectionClaim.claim_date < prev_end
         ).scalar() or 0.0
 
         prev_profit = prev_sales_profit - prev_returns_profit - prev_loss - prev_purchase_return_variance
@@ -669,13 +713,24 @@ def _profit_for_range(db: Session, shop_id: int, start: datetime, end: datetime,
         func.coalesce(func.sum(PurchaseReturn.inventory_valuation_variance), 0.0)
     ).filter(
         PurchaseReturn.shop_id == shop_id,
-        PurchaseReturn.note_type == "D",
         PurchaseReturn.created_at >= start,
         PurchaseReturn.created_at < end
     )
     if product_id is not None:
         variance_q = variance_q.filter(PurchaseReturn.shop_product_id == product_id)
     variance = float(variance_q.scalar() or 0.0)
+
+    claim_q = db.query(
+        func.coalesce(func.sum(CostCorrectionClaim.amount), 0.0)
+    ).filter(
+        CostCorrectionClaim.shop_id == shop_id,
+        _claim_not_archived(shop_id),
+        CostCorrectionClaim.claim_date >= start,
+        CostCorrectionClaim.claim_date < end
+    )
+    if product_id is not None:
+        claim_q = claim_q.filter(CostCorrectionClaim.product_id == product_id)
+    variance += float(claim_q.scalar() or 0.0)
 
     profit = revenue - cost - loss - variance
 

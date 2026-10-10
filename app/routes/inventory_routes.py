@@ -215,6 +215,52 @@ def sync_inventory_logs(
                 elif log.price > 0:
                     inventory.average_cost = log.price
 
+            # ── Purchase correction notes (QDN / PDN), Phase 1 ───────────
+            # The phone computes the exact new average (formulas in the
+            # plan, A5) and sends it as resulting_average_cost; the server
+            # trusts it, same pattern as ADD above. Fallbacks exist only
+            # for a client that omits it.
+            elif log.type == "QTY_CORR_ADD":
+                # Bill understated: extra pens received. Additive.
+                old_stock = float(inventory.current_stock or 0.0)
+                old_avg = float(inventory.average_cost or 0.0)
+                new_stock = old_stock + log.quantity
+                client_avg = log.resulting_average_cost
+                if client_avg is not None and client_avg >= 0 and client_avg == client_avg and client_avg not in (float("inf"), float("-inf")):
+                    new_avg = client_avg
+                elif log.price <= 0 or new_stock <= 0:
+                    new_avg = old_avg
+                elif old_stock <= 0:
+                    new_avg = log.price
+                else:
+                    new_avg = ((old_stock * old_avg) + (log.quantity * log.price)) / new_stock
+                inventory.current_stock = new_stock
+                inventory.average_cost = new_avg
+
+            elif log.type == "QTY_CORR_REDUCE":
+                # Bill overstated: pens that never arrived leave stock at
+                # the BILL's own rate (log.price). Subtractive.
+                old_stock = float(inventory.current_stock or 0.0)
+                old_avg = float(inventory.average_cost or 0.0)
+                new_stock = old_stock - log.quantity
+                client_avg = log.resulting_average_cost
+                if client_avg is not None and client_avg >= 0 and client_avg == client_avg and client_avg not in (float("inf"), float("-inf")):
+                    new_avg = client_avg
+                elif new_stock <= 0:
+                    new_avg = 0.0
+                else:
+                    new_avg = max(((old_stock * old_avg) - (log.quantity * log.price)) / new_stock, 0.0)
+                inventory.current_stock = new_stock
+                inventory.average_cost = new_avg
+
+            elif log.type == "COST_ADJUST":
+                # Price note: stock does NOT change, only the average cost.
+                client_avg = log.resulting_average_cost
+                if client_avg is not None and client_avg >= 0 and client_avg == client_avg and client_avg not in (float("inf"), float("-inf")):
+                    inventory.average_cost = client_avg
+                # no client value -> leave the average untouched (the server
+                # cannot know the shelf/gone split without the bill history)
+
             # Commit this log on its own instead of batching every log
             # into one transaction committed at the very end — a plain
             # rollback() undoes the WHOLE transaction, not just the

@@ -85,6 +85,12 @@ class PurchaseReturnDto(BaseModel):
     # haven't updated continue to sync fine (server default is 0.0).
     inventory_valuation_variance: Optional[float] = 0.0
 
+    # Purchase correction notes (QDN / PDN), Phase 1. All optional so old
+    # clients keep working: NULL note_kind = RETURN (D) / ADDITION (C).
+    note_kind: Optional[str] = None          # RETURN | ADDITION | QTY_CORRECTION | PRICE_CORRECTION
+    rate_delta_net: Optional[float] = 0.0
+    shelf_value_delta: Optional[float] = 0.0
+
 
 class PurchaseReturnCreateRequest(PurchaseReturnDto):
     """Single-row create — same fields as the DTO. Wrapped here so
@@ -157,6 +163,9 @@ class PurchaseReturnOut(BaseModel):
     invoice_type:            Optional[str]  = None
     place_of_supply_code:    Optional[str]  = None
     inventory_valuation_variance: Optional[float] = None
+    note_kind: Optional[str] = None
+    rate_delta_net: Optional[float] = None
+    shelf_value_delta: Optional[float] = None
 
 
 class PurchaseReturnSyncResponse(BaseModel):

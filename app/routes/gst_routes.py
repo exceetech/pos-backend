@@ -1258,10 +1258,18 @@ def get_gstr2(
         # note (CDNR) or an unregistered one (CDNUR), debit or credit note —
         # either way it's a value adjustment against previously-availed ITC.
         # Net it here so the headline totals match the sum of the detail rows.
-        total_itc_igst -= ret_av_igst
-        total_itc_cgst -= ret_av_cgst
-        total_itc_sgst -= ret_av_sgst
-        total_itc_cess -= ret_av_cess
+        # Stage-1 fix P0-3: only a D-type note (purchase return / debit note)
+        # REVERSES ITC. A C-type note (purchase addition / credit note) ADDS
+        # ITC, so its sign is the opposite. NULL note_type = legacy D.
+        itc_sign = 1.0 if (r.note_type or "D").upper() == "C" else -1.0
+        total_itc_igst += itc_sign * ret_av_igst
+        total_itc_cgst += itc_sign * ret_av_cgst
+        total_itc_sgst += itc_sign * ret_av_sgst
+        total_itc_cess += itc_sign * ret_av_cess
+        # Phase 6: the headline taxable value is NET of notes too (a debit note,
+        # including a quantity / price correction, lowers it; a credit note
+        # raises it), so it agrees with the ITC totals above.
+        total_taxable_value += itc_sign * (r.taxable_amount or 0.0)
 
         if is_registered:
             cdnr_list.append(Gstr2CdnrItem(

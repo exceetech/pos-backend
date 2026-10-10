@@ -38,7 +38,7 @@ import time
 import uuid
 from datetime import datetime
 
-from fastapi import APIRouter, Depends, HTTPException, Request, UploadFile, File
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, UploadFile, File
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
@@ -78,6 +78,8 @@ def _sweep_stale_pdfs() -> None:
 class CreatePaymentLinkRequest(BaseModel):
     customer_name: str | None = None
     customer_phone: str | None = None
+    # Split bills: link for only the UPI part. Omitted = the whole bill.
+    amount: float | None = None
 
 
 class CreatePaymentLinkResponse(BaseModel):
@@ -126,6 +128,11 @@ def create_link(
         )
 
     amount_paise = int(round(float(bill.final_amount) * 100))
+    if body.amount is not None:
+        part_paise = int(round(float(body.amount) * 100))
+        if part_paise <= 0 or part_paise > amount_paise:
+            raise HTTPException(status_code=400, detail="Link amount must be more than zero and not more than the bill amount")
+        amount_paise = part_paise
     if amount_paise <= 0:
         raise HTTPException(status_code=400, detail="Bill amount must be greater than zero")
 
@@ -174,6 +181,8 @@ class CreateQrCodeResponse(BaseModel):
 @router.post("/{bill_number}/create-qr", response_model=CreateQrCodeResponse)
 def create_qr(
     bill_number: str,
+    # Split bills: QR for only the UPI part. Omitted = the whole bill.
+    amount: float | None = Query(None, gt=0),
     db: Session = Depends(get_db),
     current_shop=Depends(get_current_shop),
 ):
@@ -210,6 +219,11 @@ def create_qr(
         )
 
     amount_paise = int(round(float(bill.final_amount) * 100))
+    if amount is not None:
+        part_paise = int(round(float(amount) * 100))
+        if part_paise > amount_paise:
+            raise HTTPException(status_code=400, detail="QR amount cannot be more than the bill amount")
+        amount_paise = part_paise
     if amount_paise <= 0:
         raise HTTPException(status_code=400, detail="Bill amount must be greater than zero")
 
@@ -285,7 +299,11 @@ def upload_pdf(
     with open(path, "wb") as out:
         out.write(file.file.read())
 
-    pdf_url = f"{str(request.base_url).rstrip('/')}/pos-payments/pdf/{token}"
+    # Customers open this link on their own phones, so it must be a public address.
+    # Set PUBLIC_BASE_URL (e.g. https://api.yourdomain.com) when the server is
+    # reached through a LAN address, tunnel or proxy; otherwise the request host is used.
+    base = (os.getenv("PUBLIC_BASE_URL") or str(request.base_url)).rstrip("/")
+    pdf_url = f"{base}/pos-payments/pdf/{token}"
     return UploadPdfResponse(pdf_url=pdf_url)
 
 
@@ -391,6 +409,20 @@ async def webhook(request: Request, db: Session = Depends(get_db)):
             db.add(ProcessedWebhookEvent(razorpay_event_id=event_id, event_type=event_type))
             db.commit()
         return {"status": "duplicate_payment_flagged"}
+
+    # Safety: never mark paid when Razorpay says less money came in than the
+    # QR / link asked for (fixed-amount codes normally prevent this).
+    expected_paise = (qr_entity.get("payment_amount") if is_qr_event else link_entity.get("amount"))
+    paid_paise = payment_entity.get("amount")
+    if isinstance(expected_paise, (int, float)) and isinstance(paid_paise, (int, float)) and paid_paise < expected_paise:
+        logger.error(
+            "UNDERPAYMENT for bill %s: expected %s paise, got %s (payment_id=%s) — left unpaid",
+            bill.id, expected_paise, paid_paise, rp_payment_id,
+        )
+        if event_id:
+            db.add(ProcessedWebhookEvent(razorpay_event_id=event_id, event_type=event_type))
+            db.commit()
+        return {"status": "underpaid_ignored"}
 
     bill.payment_status = "paid"
     bill.razorpay_payment_id = rp_payment_id

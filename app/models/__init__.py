@@ -17,6 +17,8 @@ from .gst_sales_invoice import GstSalesInvoice, GstSalesInvoiceItem
 from .purchase_return import PurchaseReturn
 from .scrap import Scrap
 from .purchase_batch import PurchaseBatch
+from .sale_allocation import SaleBatchAllocation, PdnGonePool, CostCorrectionClaim
+from .money_entry import MoneyEntry
 from .credit_note import CreditNote, CreditNoteItem
 from .import_service import ImportService
 from .shop_category import ShopCategory

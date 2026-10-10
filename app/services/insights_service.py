@@ -2,7 +2,7 @@ import os
 from datetime import datetime, timedelta
 from app.util.time_utils import local_now
 from sqlalchemy.orm import Session
-from sqlalchemy import func, extract
+from sqlalchemy import func, extract, or_
 from app.util.ai_cache import insights_cache as _insights_cache
 from app.models.inventory import Inventory
 from app.models.bill import Bill
@@ -19,6 +19,19 @@ _WEEKDAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday",
 
 
 # Per-shop insight cache lives in app.util.ai_cache (shared with the route + invalidation).
+def _is_genuine_supplier_return():
+    """SQL condition: a real return of goods to a supplier.
+
+    Excludes additions (note_type C) and QDN / PDN correction notes
+    (note_kind QTY_CORRECTION / PRICE_CORRECTION). Legacy rows (NULL
+    type / kind) count as returns, as they always did.
+    """
+    return (
+        or_(PurchaseReturn.note_type.is_(None), PurchaseReturn.note_type == "D")
+        & or_(PurchaseReturn.note_kind.is_(None), PurchaseReturn.note_kind == "RETURN")
+    )
+
+
 def generate_structured_insights(db: Session, shop_id: int):
     cached = _insights_cache.get(shop_id)
     if cached is not None:
@@ -321,9 +334,12 @@ def generate_structured_insights(db: Session, shop_id: int):
                 break 
 
     # 13. Supplier Return Rate (Leak)
+    # Phase 1: only genuine returns to a supplier count - not additions
+    # (C) and not QDN/PDN correction notes.
     return_val = db.query(func.sum(PurchaseReturn.invoice_value)).filter(
         PurchaseReturn.shop_id == shop_id, 
-        PurchaseReturn.created_at >= thirty_days_ago
+        PurchaseReturn.created_at >= thirty_days_ago,
+        _is_genuine_supplier_return()
     ).scalar() or 0.0
 
     if return_val > 2000:
@@ -826,7 +842,8 @@ def generate_structured_insights(db: Session, shop_id: int):
         PurchaseReturn.supplier_name,
         func.count(PurchaseReturn.id)
     ).filter(
-        PurchaseReturn.shop_id == shop_id, PurchaseReturn.created_at >= thirty_days_ago
+        PurchaseReturn.shop_id == shop_id, PurchaseReturn.created_at >= thirty_days_ago,
+        _is_genuine_supplier_return()
     ).group_by(PurchaseReturn.supplier_name).having(func.count(PurchaseReturn.id) >= 2).limit(1).first()
     if freq_supplier_return:
         insights.append({

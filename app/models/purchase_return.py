@@ -109,3 +109,27 @@ class PurchaseReturn(Base):
     # recomputes it. Zero for Credit Notes and for any row that
     # predates this column.
     inventory_valuation_variance = Column(Float, nullable=False, default=0.0)
+
+    # ── Purchase correction notes (QDN / PDN), Phase 1 ───────────────────
+    # What this note IS, independent of its direction (note_type D/C):
+    #   NULL / RETURN      goods sent back to the supplier (D)  [legacy rows]
+    #   ADDITION           extra goods received (C)
+    #   QTY_CORRECTION     the bill's quantity was wrong (D = fewer, C = more)
+    #   PRICE_CORRECTION   the bill's rate / taxable / GST was wrong
+    #                      (D = bill lowered, C = bill raised); moves no stock
+    # NULL is kept valid forever: every reader treats it as RETURN (D) or
+    # ADDITION (C) by note_type.
+    note_kind = Column(String(20), nullable=True)
+
+    # PRICE_CORRECTION only: per-unit NET (taxable) rate change, signed
+    # new - old. 0 for every other kind.
+    rate_delta_net = Column(Float, nullable=False, default=0.0)
+
+    # PRICE_CORRECTION only: the part of the note value that was added to
+    # the average cost (pens still on the shelf). The remainder (pens
+    # already sold / returned) is in inventory_valuation_variance.
+    shelf_value_delta = Column(Float, nullable=False, default=0.0)
+
+
+# Allowed note_kind values (None is also allowed = legacy).
+NOTE_KINDS = ("RETURN", "ADDITION", "QTY_CORRECTION", "PRICE_CORRECTION")

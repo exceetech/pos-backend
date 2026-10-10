@@ -35,6 +35,8 @@ from app.routes.purchase_return_routes import router as purchase_return_router
 from app.routes.scrap_routes import router as scrap_router
 from app.routes.gst_sales_invoice_routes import router as gst_sales_invoice_router
 from app.routes.purchase_batch_routes import router as purchase_batch_router
+from app.routes.sale_allocation_routes import router as sale_allocation_router
+from app.routes.money_entry_routes import router as money_entry_router
 from app.routes.credit_note_routes import router as credit_note_router
 from app.routes.user_event_log_routes import router as user_event_log_router
 from app.routes.diagnostic_report_routes import router as diagnostic_report_router
@@ -216,6 +218,8 @@ app.include_router(purchase_return_router)
 app.include_router(scrap_router)
 app.include_router(gst_sales_invoice_router)
 app.include_router(purchase_batch_router)
+app.include_router(sale_allocation_router)
+app.include_router(money_entry_router)
 app.include_router(credit_note_router)
 app.include_router(user_event_log_router)
 app.include_router(diagnostic_report_router)

@@ -18,11 +18,11 @@ from datetime import datetime
 from app.util.time_utils import epoch_ms_to_local
 from typing import List
 
-from sqlalchemy import func
+from sqlalchemy import func, or_
 
 from app.database import get_db
 from app.dependencies import get_current_shop
-from app.models.purchase_return import PurchaseReturn
+from app.models.purchase_return import PurchaseReturn, NOTE_KINDS
 from app.models.purchase_item import PurchaseItem
 from app.schemas.purchase_return_schema import (
     PurchaseReturnCreateRequest,
@@ -46,6 +46,32 @@ def _epoch_ms_to_dt(ms: int | None) -> datetime | None:
         return epoch_ms_to_local(ms)
     except (ValueError, OSError):
         return None
+
+
+def validate_note_kind(r) -> str | None:
+    """Phase 1: check note_kind is allowed and agrees with note_type / quantity.
+
+    None (old clients, legacy rows) is always fine. Returns an error or None.
+    """
+    kind = getattr(r, "note_kind", None)
+    if kind is None:
+        return None
+    if kind not in NOTE_KINDS:
+        return f"note_kind must be one of {', '.join(NOTE_KINDS)}"
+    note_type = (getattr(r, "note_type", None) or "D").upper()
+    if kind == "RETURN" and note_type != "D":
+        return "note_kind RETURN must have note_type D"
+    if kind == "ADDITION" and note_type != "C":
+        return "note_kind ADDITION must have note_type C"
+    qty = getattr(r, "quantity_returned", 0.0) or 0.0
+    if kind == "PRICE_CORRECTION":
+        # A price note moves no stock; it may cover 0 pens only as a
+        # defensive case. Never negative.
+        if qty < 0:
+            return "quantity_returned must be >= 0"
+    elif qty <= 0:
+        return "quantity_returned must be > 0"
+    return None
 
 
 def validate_gstr2_fields(r) -> str | None:
@@ -137,6 +163,16 @@ def check_over_return(db: Session, shop_id: int, payload, exclude_return_id: int
     if not original_invoice_id or not shop_product_id:
         return None
 
+    # Stage 1 fix P0-4: only a Debit Note ("D", the default when the legacy
+    # client omits it) takes pens OUT, so only it can over-return. A Credit
+    # Note ("C", an addition) puts pens IN and must never be rejected here.
+    new_note_type = (getattr(payload, "note_type", None) or "D").upper()
+    if new_note_type != "D":
+        return None
+    # Phase 1: a price note (PDN) moves no stock, so it can never over-return.
+    if getattr(payload, "note_kind", None) == "PRICE_CORRECTION":
+        return None
+
     purchased_qty = (
         db.query(func.coalesce(func.sum(PurchaseItem.quantity), 0.0))
         .filter(
@@ -147,19 +183,34 @@ def check_over_return(db: Session, shop_id: int, payload, exclude_return_id: int
     )
     if not purchased_qty:
         # No matching invoice line found server-side (e.g. the invoice
-        # itself hasn't synced yet) — can't check, so don't block.
+        # itself hasn't synced yet) - can't check, so don't block.
         return None
 
-    already_returned_query = db.query(
-        func.coalesce(func.sum(PurchaseReturn.quantity_returned), 0.0)
+    # Net quantity already taken out = D notes minus C notes (an addition
+    # raises what can still be returned: returnable = purchased - D + C).
+    # Legacy rows with note_type NULL count as D, matching the client.
+    prior_rows = db.query(
+        PurchaseReturn.note_type,
+        func.coalesce(func.sum(PurchaseReturn.quantity_returned), 0.0),
     ).filter(
         PurchaseReturn.shop_id == shop_id,
         PurchaseReturn.original_invoice_id == original_invoice_id,
         PurchaseReturn.shop_product_id == shop_product_id,
+        # Price notes carry no stock movement - never count their quantity.
+        or_(PurchaseReturn.note_kind.is_(None),
+            PurchaseReturn.note_kind != "PRICE_CORRECTION"),
     )
     if exclude_return_id is not None:
-        already_returned_query = already_returned_query.filter(PurchaseReturn.id != exclude_return_id)
-    already_returned = already_returned_query.scalar() or 0.0
+        prior_rows = prior_rows.filter(PurchaseReturn.id != exclude_return_id)
+    prior_rows = prior_rows.group_by(PurchaseReturn.note_type).all()
+
+    already_returned = 0.0
+    for note_type, qty_sum in prior_rows:
+        qty_sum = qty_sum or 0.0
+        if (note_type or "D").upper() == "C":
+            already_returned -= qty_sum
+        else:
+            already_returned += qty_sum
 
     new_quantity = getattr(payload, "quantity_returned", 0.0) or 0.0
     if already_returned + new_quantity > purchased_qty + 0.01:
@@ -241,6 +292,10 @@ def _to_model(payload, shop_id: int) -> PurchaseReturn:
         # as Fix 2's resulting_average_cost). Old clients omit the
         # field entirely, which defaults to 0.0 here.
         inventory_valuation_variance = getattr(payload, "inventory_valuation_variance", None) or 0.0,
+        # Purchase correction notes (QDN / PDN), Phase 1: stored as sent.
+        note_kind               = getattr(payload, "note_kind", None),
+        rate_delta_net          = getattr(payload, "rate_delta_net", None) or 0.0,
+        shelf_value_delta       = getattr(payload, "shelf_value_delta", None) or 0.0,
     )
 
 
@@ -254,7 +309,7 @@ def create_purchase_return(
     db: Session = Depends(get_db),
     current_shop = Depends(get_current_shop),
 ):
-    if payload.quantity_returned <= 0:
+    if payload.note_kind != "PRICE_CORRECTION" and payload.quantity_returned <= 0:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="quantity_returned must be > 0",
@@ -263,6 +318,12 @@ def create_purchase_return(
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="note_type must be C or D",
+        )
+    err = validate_note_kind(payload)
+    if err:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=err,
         )
 
     err = validate_gstr2_fields(payload)
@@ -300,7 +361,7 @@ def sync_purchase_returns(
 
     for r in payload.records:
         try:
-            if r.quantity_returned <= 0:
+            if r.note_kind != "PRICE_CORRECTION" and r.quantity_returned <= 0:
                 response.failed.append({
                     "local_id": r.local_id,
                     "reason": "quantity_returned must be > 0",
@@ -310,6 +371,13 @@ def sync_purchase_returns(
                 response.failed.append({
                     "local_id": r.local_id,
                     "reason": "note_type must be C or D",
+                })
+                continue
+            err = validate_note_kind(r)
+            if err:
+                response.failed.append({
+                    "local_id": r.local_id,
+                    "reason": err,
                 })
                 continue
 

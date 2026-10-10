@@ -13,7 +13,7 @@ class InventoryLog(Base):
     shop_id = Column(Integer, ForeignKey("shops.id"), nullable=False, index=True)
     product_id = Column(Integer, ForeignKey("shop_products.id"), nullable=False, index=True)
 
-    type = Column(String, nullable=False)  # ADD, SALE, LOSS, RETURN, PURCHASE_RETURN, ADJUST, CANCEL_RESTOCK
+    type = Column(String, nullable=False)  # ADD, SALE, LOSS, RETURN, PURCHASE_RETURN, ADJUST, CANCEL_RESTOCK, QTY_CORR_ADD, QTY_CORR_REDUCE, COST_ADJUST
 
     quantity = Column(Float, nullable=False)
     price = Column(Float, nullable=False)
